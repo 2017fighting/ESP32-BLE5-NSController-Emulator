@@ -17,7 +17,7 @@ The mode in which the device presents one placed tag to the console.
 _Avoid_: tag mode, NFC mode
 
 **IDLE**:
-The mode in which the device is performing neither function: no plan is replaying and no tag is placed.
+The absence of a mode: no plan is replaying and no tag is placed.
 _Avoid_: stopped, ready, neutral
 
 **Control link**:
@@ -29,7 +29,7 @@ The BLE connection between the device and the Nintendo Switch 2.
 _Avoid_: BLE link, wireless link
 
 **Staging**:
-Bulk bytes (a plan, a tag, key material) held by the device but not yet committed. Staging is not a mode, and never coexists with one.
+Bulk bytes (a plan, a tag, key material) held by the device but not yet committed. Not a mode: a plan is staged only while IDLE, a tag also while AMIIBO.
 _Avoid_: loading, upload buffer, pending
 
 **Neutral**:
@@ -37,5 +37,5 @@ The report in which every button is released and both sticks are centred.
 _Avoid_: release, reset, idle report
 
 **Panic stop**:
-A halt of the active mode performed at the board with the BOOT button, independent of the container.
+The one halt of the active mode that does not come from the container: a press of the BOOT button at the board.
 _Avoid_: emergency stop, abort, kill switch
