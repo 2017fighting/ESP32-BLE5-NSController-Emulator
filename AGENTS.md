@@ -16,4 +16,4 @@ Single-context: one `CONTEXT.md` plus `docs/adr/` at the repo root, created lazi
 
 ### External references
 
-The external repos this effort reads — canonical, context and untrusted — are listed and pinned in `docs/references.md`. Cite them by alias (e.g. `switch2_controller_research/commands.md:47-100`), never by absolute path; local clones resolve under `$REFERENCE_ROOT` (default `~/clone`).
+The external repos this effort reads — canonical, context and untrusted — are listed in `docs/references.md` and pinned by commit, the untrusted one deliberately excepted. Cite them by alias (e.g. `switch2_controller_research/commands.md:47-100`), never by absolute path; local clones resolve under `$REFERENCE_ROOT` (default `~/clone`).

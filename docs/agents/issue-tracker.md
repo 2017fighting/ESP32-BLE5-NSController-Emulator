@@ -17,8 +17,9 @@ This clone has four remotes; `origin` is **our fork**, which is where we track w
 `gh`'s automatic inference from `git remote -v`: with four remotes tracked, which one it picks is
 not worth depending on.
 
-External repos this effort reads (protocol sources, macro library, amiibo images) are separate
-from these remotes and are listed in `docs/references.md`.
+The wider external corpus this effort reads (protocol sources, macro library, amiibo images) is
+listed in `docs/references.md`; the `fix` and `easycon` remotes double as reference forks and
+appear there too.
 
 Export once per session to keep commands short:
 
@@ -49,7 +50,7 @@ GitHub shares one number space across issues and PRs, so a bare `#42` may be eit
 
 ## When a skill says "publish to the issue tracker"
 
-Create a GitHub issue on `$GH_REPO` (the `mine` fork).
+Create a GitHub issue on `$GH_REPO` (our fork).
 
 ## When a skill says "fetch the relevant ticket"
 

@@ -8,14 +8,16 @@ canonical inputs, which are context only, and which are untrusted. Every citatio
 
 A reference is written as an **alias** plus an **`owner/repo@sha` pin**:
 
-| where        | form                                          | example                                  |
-| ------------ | --------------------------------------------- | ---------------------------------------- |
-| prose        | `<alias>/<path>[:<lines>]`                    | `switch2_controller_research/commands.md:47-100` |
-| this file    | `<alias>` → `github.com/<owner>/<repo> @ <sha>` | see the tables below                    |
+| where        | form                                            | example                                          |
+| ------------ | ----------------------------------------------- | ------------------------------------------------ |
+| prose        | `<alias>/<path>[:<lines>][#<anchor>]`           | `switch2_controller_research/hid_reports.md#input-report-0x09` |
+| this file    | `<alias>` → `github.com/<owner>/<repo> @ <sha>` | see the tables below                             |
 
 - The alias resolves against **`$REFERENCE_ROOT`**, default `~/clone`, as
   `$REFERENCE_ROOT/<alias>`. Two aliases are git remotes of this repo rather than
   clones, and are marked as such below.
+- A trailing **`#<anchor>`** names a section in the rendered file. It is used only when
+  building the `open at` permalink; it is not part of the filesystem path.
 - The `owner/repo@sha` pin is the source of truth, **not** the local clone. Any claim can
   be re-verified by cloning the pin, so the line numbers in a citation are meaningful
   only against that pin. Each row also carries an **`open at`** base URL, so a citation
@@ -48,6 +50,7 @@ A reference is written as an **alias** plus an **`owner/repo@sha` pin**:
 | `emuiibo`                     | `XorTroll/emuiibo`                                                    | `28b357d5ce4aa373891c5294127f79137e0917ff` | https://github.com/XorTroll/emuiibo/blob/28b357d5ce4aa373891c5294127f79137e0917ff/ | Virtual-amiibo identity model: 10-byte uuid, `random_uuid`, per-game areas. |
 | `UARTSwitchCon`               | `nullstalgia/UARTSwitchCon`                                           | `ad772477c19306feae61f9d4d3538c1ec0a6feb6` | https://github.com/nullstalgia/UARTSwitchCon/blob/ad772477c19306feae61f9d4d3538c1ec0a6feb6/ | `Protocol.md`, a second independent protocol reference.                     |
 | `EasyMCU_ESP32S3`             | `EasyConNS/EasyMCU_ESP32S3`                                           | `1a39ca50d50f06a1a7c523c775f551dda75b996f` | https://github.com/EasyConNS/EasyMCU_ESP32S3/blob/1a39ca50d50f06a1a7c523c775f551dda75b996f/ | The S3 EasyCon line: N16R8 board, 16 MB partition layout, `sdkconfig.n16r8`. |
+| `amiitool`                    | `socram8888/amiitool`                                                 | `4fe80a1de5ae19e1a1a6a7faeca645dafd0189c3` | https://github.com/socram8888/amiitool/blob/4fe80a1de5ae19e1a1a6a7faeca645dafd0189c3/ | Reverse-engineered amiibo cryptography: the tag/data HMAC and AES-CTR re-signing flow. **Not cloned locally.** |
 
 ## Context
 
@@ -57,8 +60,8 @@ A reference is written as an **alias** plus an **`owner/repo@sha` pin**:
 | `switchnotes`                            | `timmeh87/switchnotes`                                     | `a4bdfcb182939001ab0b118eee251dee03d0ea60` | https://github.com/timmeh87/switchnotes/blob/a4bdfcb182939001ab0b118eee251dee03d0ea60/ | NS1 protocol notes.                                            |
 | `joycontrol`                             | `mart1nro/joycontrol`                                      | `18a09da1a04306534ff9e1df8a1a69c0192a3244` | https://github.com/mart1nro/joycontrol/blob/18a09da1a04306534ff9e1df8a1a69c0192a3244/ | NS1 controller emulation in Python.                            |
 | `jc_toolkit`                             | `CTCaer/jc_toolkit`                                        | `9d0cc455aebd07930b557840b47cb26df9eb4a1f` | https://github.com/CTCaer/jc_toolkit/blob/9d0cc455aebd07930b557840b47cb26df9eb4a1f/ | Joy-Con hardware/SPI reference.                                |
-| `fix` *(git remote)*                     | `xioxin/ESP32-BLE5-NSController-Emulator`                  | `f5e43dbaf347cd63d0e0190ea65f82edf6187492` | https://github.com/xioxin/ESP32-BLE5-NSController-Emulator/blob/f5e43dbaf347cd63d0e0190ea65f82edf6187492/ | Reference fork: WiFi HTTP/WebSocket control plane, step scripts. |
-| `easycon` *(git remote)*                 | `EasyConNS/EasyMCU_ESP32C61`                               | `c86c150435a2f917b7ad7aaf3b95685827c00a97` | https://github.com/EasyConNS/EasyMCU_ESP32C61/blob/c86c150435a2f917b7ad7aaf3b95685827c00a97/ | Related C61 project; a second command-router shape.            |
+| `fix`                                    | `xioxin/ESP32-BLE5-NSController-Emulator`                  | `f5e43dbaf347cd63d0e0190ea65f82edf6187492` | https://github.com/xioxin/ESP32-BLE5-NSController-Emulator/blob/f5e43dbaf347cd63d0e0190ea65f82edf6187492/ | Reference fork (git remote, not a clone): WiFi HTTP/WebSocket control plane, step scripts. |
+| `easycon`                                | `EasyConNS/EasyMCU_ESP32C61`                               | `c86c150435a2f917b7ad7aaf3b95685827c00a97` | https://github.com/EasyConNS/EasyMCU_ESP32C61/blob/c86c150435a2f917b7ad7aaf3b95685827c00a97/ | Related C61 project (git remote, not a clone); a second command-router shape.            |
 
 `fix` and `easycon` are remotes of **this** repo, not `$REFERENCE_ROOT` clones; reach them
 with `git show <remote>/<branch>:<path>`. See `docs/agents/issue-tracker.md` for the full
