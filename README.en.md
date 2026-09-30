@@ -22,7 +22,7 @@ The project adopts a **modular design**, supporting custom Transport Layer and P
 ### Tested ESP32 Models
 - **ESP32-C61** ✅ Fully tested, stable connection  
 - **ESP32-C6**  ✅ Basic tests passed, stable connection  
-- **ESP32-S3**  ⚠️ Patch files have been officially provided by Espressif on the main branch. Basic tests have been completed, delivering stable Bluetooth connection performance  
+- **ESP32-S3**  ⚠️ Supported by Espressif through a Kconfig option in ESP-IDF v5.5.5+ (no patch needed). Basic tests passed, stable connection.
 
 
 ### Bluetooth Stack Requirements
@@ -43,6 +43,10 @@ cd ESP32-BLE5-NSController-Emulator
 
 ### Apply Patch (Critical Step)
 Since NS2 protocol requires 5ms connection interval while standard BLE specification only allows a minimum of 7.5ms, we need to modify the underlying parameters of the NimBLE stack:
+
+> **This patch applies to ESP32-C6/C61 only.** ESP32-S3 does **not** use this patch,
+> and running it against S3 is not supported. S3 gets the 5 ms interval from a
+> Kconfig option instead — see *ESP32-S3* below.
 
 1. **Backup original file**:
    ```bash
@@ -66,6 +70,29 @@ idf.py set-target esp32c61  # Select target based on your hardware
 idf.py build
 idf.py -p PORT flash monitor
 ```
+
+### ESP32-S3
+ESP32-S3 needs **no patch**. It has a released-IDF path: set
+`CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE=y` (already in
+`sdkconfig.defaults.esp32s3`) and build.
+
+**Requires ESP-IDF v5.5.5 or newer.** The Kconfig symbol does not exist in
+v5.5.4 or earlier (`v5.4.x` included), and the failure is silent — Kconfig emits
+`warning: unknown kconfig symbol 'BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE'`, the
+build still succeeds, and the firmware then refuses the console's 5 ms
+interval at run time. Do not use `release/v5.5` as a proxy for `v5.5.4`; the fix
+landed on the branch after that tag.
+
+```bash
+idf.py set-target esp32s3
+idf.py build
+python scripts/package_firmware_v5.py   # note: the _v5 script; see docs/research/s3-bringup.md
+```
+
+The S3 defaults target the **N16R8** module (16 MB flash) with a dual-OTA
+partition table; PSRAM is deliberately left disabled for now. Measured build
+facts, the toolchain pin, and the version trap are in
+[`docs/research/s3-bringup.md`](docs/research/s3-bringup.md).
 
 ### Configuration and Pairing
 1. After first boot, the device will enter BLE advertising mode
@@ -121,9 +148,8 @@ Legitimate Source Analysis: We studied the underlying implementation of BLE conn
 ### Current Status
 - **ESP32-C61** ✅ Patch tested successfully, stable connection
 - **ESP32-C6**  ✅ Patch tested successfully, stable connection
-- **ESP32-S3**  ⚠️ Patch files provided by Espressif on the main branch have passed basic tests with stable connections.  
+- **ESP32-S3**  ⚠️ Supported by Espressif through a Kconfig option in ESP-IDF v5.5.5+ (no patch needed). Basic tests passed, stable connection.
 - **Other models** ⚠️ Please wait for the official stable release. If you are using the version with the Apache NimBLE open-source stack, you may try applying the patch script. For other stacks, please refer to the ESP32-S3 support issue below.  
-
 
 ## Known Issues
 
@@ -133,7 +159,7 @@ It is not recommended to connect the controller via this interface afterwards. O
 
 ### ESP32-S3 Support Issues
 ~~Due to ESP32-S3 using a closed-source Bluetooth stack, we cannot directly modify connection parameters. I've submitted related ISSUEs to Espressif, requesting open interfaces or technical support. Current progress is slow and requires community push.~~  
-The feature is now supported on the main branch of ESP-IDF with patch files provided by Espressif official engineers. The S3 firmware has been officially released in the repository. For custom development, please wait until Espressif merges the relevant features into the stable release branch, or refer to the linked issue to download and apply the patch files for testing.  
+The feature is now available in a released ESP-IDF (**v5.5.5 and newer**) and the S3 firmware is available in this repository. For custom development, set `CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE=y` in Kconfig — no patch files are needed on S3. See [ESP32-S3](#esp32-s3) above for the version trap.  
 Issue link:  
 [ESP32-S3 Bluedroid Controller Support for 5ms Connection Interval](https://github.com/espressif/esp-idf/issues/18467)  
 Special thanks to the Espressif official team and community contributors for their support.

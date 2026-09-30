@@ -23,7 +23,7 @@
 ### 已测试的 ESP32 型号
 - **ESP32-C61** ✅ 已通过完整测试，连接稳定
 - **ESP32-C6**  ✅ 已通过基本测试，连接稳定
-- **ESP32-S3**  ⚠️ 由乐鑫官方在主分支上提供了补丁文件，已通过基本测试，连接稳定
+- **ESP32-S3**  ⚠️ 由乐鑫官方在 ESP-IDF v5.5.5+ 中提供 Kconfig 选项支持（无需补丁），已通过基本测试，连接稳定
 
 ### 蓝牙协议栈要求
 本项目基于 **ESP-IDF** 框架开发。理论上，任何使用 Apache NimBLE 开源堆栈的 ESP-IDF 固件都可以支持。但由于 NS2 控制器通讯协议突破了 BLE 最低连接间隔的规范（标准最低为 7.5ms，NS2 要求 5ms），需要对 NimBLE 协议栈进行修改。
@@ -43,6 +43,9 @@ cd ESP32-BLE5-NSController-Emulator
 
 ### 应用补丁（关键步骤）
 由于 NS2 协议要求 5ms 的连接间隔，而标准 BLE 规范最低只允许 7.5ms，因此需要修改 NimBLE 协议栈的底层参数：
+
+> **本补丁仅适用于 ESP32-C6/C61。** ESP32-S3 **不需要**该补丁，也不支持对它运行；
+> S3 通过 Kconfig 选项拿到 5ms 间隔，见下方 *ESP32-S3* 一节。
 
 1. **备份原始文件**：
    ```bash
@@ -66,6 +69,27 @@ idf.py set-target esp32c61  # 根据你的硬件选择目标
 idf.py build
 idf.py -p PORT flash monitor
 ```
+
+### ESP32-S3
+ESP32-S3 **不需要打补丁**，已发布版 ESP-IDF 直接支持：设置
+`CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE=y`（已在
+`sdkconfig.defaults.esp32s3` 中）后编译即可。
+
+**必须使用 ESP-IDF v5.5.5 或更高版本。** 该 Kconfig 符号在 v5.5.4 及更早版本
+（含全部 v5.4.x）中并不存在，而且失败是静默的——Kconfig 只会输出
+`warning: unknown kconfig symbol 'BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE'`，
+编译照样成功，固件却在运行时拒绝主机的 5ms 间隔请求。不要把 `release/v5.5`
+当成 `v5.5.4`：该修复是在这个 tag 之后才合入分支的。
+
+```bash
+idf.py set-target esp32s3
+idf.py build
+python scripts/package_firmware_v5.py   # 注意用 _v5 脚本，原因见 docs/research/s3-bringup.md
+```
+
+S3 默认配置面向 **N16R8** 模组（16MB flash）并启用双 OTA 分区表，PSRAM 暂未启用。
+实测构建数据、工具链版本与版本陷阱见
+[`docs/research/s3-bringup.md`](docs/research/s3-bringup.md)。
 
 ### 配置和配对
 1. 首次启动后，设备将进入 BLE 广播模式
@@ -125,7 +149,7 @@ NS2要求蓝牙连接间隔为 5ms，该数值低于BLE标准规范规定的 7.5
 ### 当前状态
 - **ESP32-C61** ✅ 补丁已测试成功，连接稳定
 - **ESP32-C6**  ✅ 补丁已测试成功，连接稳定
-- **ESP32-S3**  ⚠️ 由乐鑫官方在主分支上提供了补丁文件，已通过基本测试，连接稳定
+- **ESP32-S3**  ⚠️ 由乐鑫官方在 ESP-IDF v5.5.5+ 中提供 Kconfig 选项支持（无需补丁），已通过基本测试，连接稳定
 - **其他型号**  ⚠️ 请等待官方稳定版本，如使用Apache NimBLE开源堆栈的版本可以使用补丁脚本尝试。其他堆栈请查看下方ESP32-S3支持问题。
 
 ## 已知问题
@@ -136,7 +160,7 @@ NS2要求蓝牙连接间隔为 5ms，该数值低于BLE标准规范规定的 7.5
 
 ### ESP32-S3 支持问题
 ~~由于 ESP32-S3 使用了闭源的蓝牙协议栈，目前无法直接修改连接参数。我已经向乐鑫提交了相关 ISSUE，请求开放相关接口或提供技术支持。当前进展缓慢，需要社区共同推动。~~  
-现已通过esp-idf主分支以及乐鑫官方人员提供的补丁文件支持，仓库已发布S3固件，如需自行开发请等待乐鑫将功能合入稳定版本或查看ISSUE下载补丁文件自行尝试。感谢乐鑫官方人员以及社区贡献者们的支持。  
+现已通过 esp-idf 稳定发布版支持（**v5.5.5 及以上**），仓库已发布 S3 固件，自行开发时只需在 Kconfig 中设置 `CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE=y`，不需要打补丁。版本陷阱见上方 [ESP32-S3](#esp32-s3) 一节。感谢乐鑫官方人员以及社区贡献者们的支持。  
 ISSUE Link:  
 [ESP32-S3 Bluedroid Controller Support for 5ms Connection Interval](https://github.com/espressif/esp-idf/issues/18467)  
 
