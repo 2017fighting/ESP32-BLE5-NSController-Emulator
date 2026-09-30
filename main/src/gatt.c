@@ -597,6 +597,34 @@ void device_gatt_svr_register_cb(struct ble_gatt_register_ctxt* ctxt, void* arg)
   }
 }
 
+// MSYS headroom guard.
+//
+// MSYS_1 is CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT (150) blocks of 128 bytes and is
+// the pool every small allocation lands in. _os_msys_find_pool() in this NimBLE
+// port picks the first pool whose *size* fits without ever checking whether that
+// pool still has free blocks:
+//
+//     STAILQ_FOREACH(pool, &g_msys_pool_list, omp_next) {
+//         if (dsize <= pool->omp_databuf_len) { break; }   // no mp_num_free check
+//     }
+//
+// so when MSYS_1 is momentarily empty, ble_hs_mbuf_from_flat() fails outright and
+// cannot fall back to MSYS_2 (512 B, 30 blocks) even though those blocks are
+// idle. os_msys_num_free() sums all pools, so the old `< 5` guard passed while
+// allocation was failing.
+//
+// Measured on a Switch 2 parked on the grip-order screen (which stops draining
+// notifications, so the host TX queue grows): every failure reported
+// `msys free=30`, i.e. exactly MSYS_2's block count with MSYS_1 completely
+// drained. The failures were transient (~1270 of ~14700 sends) because blocks
+// come back as the console resumes reading.
+//
+// A count at or below 30 therefore means "MSYS_1 is empty". Keeping well above
+// that leaves real slack in MSYS_1, so this path can never be the thing that
+// drains it. Dropping a HID report is strictly better than failing to allocate
+// and letting the link time out (HCI 0x08, reason 520).
+#define GATT_NOTIFY_MSYS_HEADROOM 40
+
 int gatt_notify(uint16_t conn_handle, uint16_t chr_val_handle,
                 const uint8_t* data, const size_t data_len) {
     struct os_mbuf *om;
@@ -607,15 +635,19 @@ int gatt_notify(uint16_t conn_handle, uint16_t chr_val_handle,
         return BLE_HS_ENOTCONN;
     }
 
-    if (os_msys_num_free() < 5) {
-        ESP_LOGE(LOG_BLE_GATT, "Not enough memory for mbuf");
-        return BLE_HS_ENOMEM;
+    // Backpressure: the pool is getting tight, so skip this report rather than
+    // pile another mbuf into a link the peer is not draining.
+    if (os_msys_num_free() < GATT_NOTIFY_MSYS_HEADROOM) {
+        return BLE_HS_EBUSY;
     }
 
     // init mbuf
     om = ble_hs_mbuf_from_flat(data, data_len);
     if (om == NULL) {
-        ESP_LOGE(LOG_BLE_GATT, "Failed to allocate mbuf, len=%d", data_len);
+        // A non-zero free count here means this is the pool-selection bug above,
+        // not real exhaustion.
+        ESP_LOGE(LOG_BLE_GATT, "Failed to allocate mbuf, len=%d (msys free=%d)",
+                 data_len, os_msys_num_free());
         return BLE_HS_ENOMEM;
     }
 

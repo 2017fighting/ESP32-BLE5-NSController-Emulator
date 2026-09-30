@@ -79,7 +79,17 @@ static void controller_task(void *arg) {
             // Send report from local buffer - safe even if buffer swap occurs
             int rc = gatt_notify(state->conn_handle, ctrl->ns2_notification_handle,
                                     report_buffer, report_size);
-            if (rc != 0) {
+            if (rc == BLE_HS_EBUSY) {
+                // The msys pool is running low (the peer is not draining
+                // notifications - a console parked on the grip-order screen does
+                // this). gatt_notify() skipped the report rather than let the
+                // pool empty; dropping input is better than a stalled link.
+                static uint32_t s_dropped = 0;
+                if ((++s_dropped % 100) == 1) {
+                    ESP_LOGW(LOG_HID, "msys low, dropped %u reports (free=%d)",
+                             (unsigned)s_dropped, os_msys_num_free());
+                }
+            } else if (rc != 0) {
                 ESP_LOGE(LOG_HID, "controller report send failed, rc: %d", rc);
             }
 

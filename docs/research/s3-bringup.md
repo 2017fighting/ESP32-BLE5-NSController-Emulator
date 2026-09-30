@@ -593,12 +593,69 @@ link supervision timer (2 s) expires because traffic has stopped.
 
 This is the README's documented known issue ("在NS2中开启'更改握法/顺序'界面
 连上后HID报告会出现阻塞，暂未查明原因") reproduced on the bench, with a precise
-mechanism and a heap symptom attached to it. The mbuf contract looks correct on
-paper (`ble_gatts_notify_custom` "consumes supplied mbufs regardless of the
-outcome"), so the leak needs real msys counters, not more source reading.
+mechanism and a heap symptom attached to it.
 
-**Until this is fixed the controller is not usable**, even though pairing
-succeeds. This is the highest-value follow-up to come out of issue #2.
+#### Root cause: a pool-selection bug in the NimBLE port
+
+Not a leak, and not actually a shortage of memory. `_os_msys_find_pool()` picks
+the first pool whose **size** fits, and never looks at `mp_num_free`:
+
+```c
+STAILQ_FOREACH(pool, &g_msys_pool_list, omp_next) {
+    if (dsize <= pool->omp_databuf_len) { break; }   // no free-block check
+}
+```
+
+MSYS_1 is 150 blocks of 128 B; MSYS_2 is 30 blocks of 512 B. Small allocations
+always target **MSYS_1**, so while MSYS_1 is momentarily drained,
+`ble_hs_mbuf_from_flat()` fails outright and **cannot fall back to MSYS_2's idle
+blocks**. `os_msys_num_free()` sums *all* pools, so the existing `< 5` guard
+passed while allocation was failing.
+
+Measured, not inferred - every failure printed the free count, and it was always
+the same number:
+
+```
+E (124310) ble_gatt: Failed to allocate mbuf, len=63 (msys free=30)
+```
+
+`30` is exactly MSYS_2's block count, i.e. **MSYS_1 completely drained, MSYS_2
+completely idle**. The failures are *transient* (4684 allocations still succeeded
+after the first one) because blocks return as the console resumes reading - but
+while it is not reading, the link starves and dies with HCI 0x08.
+
+Two red herrings along the way, both disproved by measurement:
+
+- in-flight notification accounting is useless here, because
+  `BLE_GAP_EVENT_NOTIFY_TX` fires when the notification leaves the **host**, not
+  when the peer receives it (ATT notifications are unacknowledged);
+- there is no leak: a reconnect ran **7140 notifications with the pool steady at
+  `free=180 of 180`**.
+
+#### Fix
+
+`gatt_notify()` (`main/src/gatt.c`) declines to queue a report when the pool has
+less than `GATT_NOTIFY_MSYS_HEADROOM` (40) free blocks. Since a count at or below
+30 means "MSYS_1 is empty", 40 keeps real slack in MSYS_1 and stops this path
+from ever draining it. The HID task treats the resulting `BLE_HS_EBUSY` as a
+dropped report, not an error.
+
+Verified under the identical condition (console parked on the grip-order screen,
+not draining):
+
+| | before | after |
+| --- | --- | --- |
+| `Failed to allocate mbuf` | 894 | **0** |
+| disconnects (`reason=520`) | 1 | **0** |
+| pool at peak pressure | `free=30` (MSYS_1 empty) | `free=38` (guard engaged) |
+| notifications delivered | - | 8101, link stable |
+
+Dropping input while the console refuses to drain is the correct trade against a
+dead link. On a draining link nothing is dropped: the healthy run sat at
+`free=180`.
+
+Still worth doing upstream: the pool lookup should skip pools with no free
+blocks. That is an ESP-IDF change, not something this repo can ship.
 
 ### 11.6 Steps that still require a person
 
