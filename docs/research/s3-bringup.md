@@ -533,8 +533,27 @@ Pairing is persisted: after a reboot the firmware logs
 to the console it paired with. The console reconnects on its own.
 
 **So the ticket's step 3 is answered: yes, it enumerates as a Pro Controller and
-the console accepts it.** HID input also reaches the console — but only briefly;
-see §11.5.
+the console accepts it.**
+
+#### HID input verifiably reaches the console
+
+Confirmed directly, not assumed. The console's button-check page only reacts to
+press/release *edges*, so a held button proves nothing; a bench build that toggled
+**A** (~every 0.5 s) in `pro2_next_report()` made A blink on that page. So the
+whole path works: board -> BLE HID notification -> console acts on it.
+
+That test was reverted; `main/src/controller/hid_controller_pro2.c` is back to
+its committed state.
+
+**Operationally important:** with nothing driving the input, the board reports a
+*neutral* controller. It has no physical buttons — every button/stick value comes
+from the control plane (or a replayed macro). So "I can't control it" with no
+host attached is the expected, correct behaviour, not a fault. This cost a round
+trip to establish, so it is worth stating plainly.
+
+It also means the board currently cannot be driven at all: the native USB-CDC
+control plane does not enumerate on the host under master (§9), so there is no
+way to send it input yet. That is the next thing to fix for this effort.
 
 ### 11.4 The 5 ms link was NOT held: measured `conn_itvl=12` (15 ms)
 
