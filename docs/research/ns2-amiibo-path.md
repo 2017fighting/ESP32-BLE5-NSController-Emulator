@@ -4,6 +4,15 @@
 **Scope:** ESP32-S3-N16R8 emulating Nintendo Switch 2 Pro Controller over BLE  
 **Sources:** cited by alias against the pins in [`docs/references.md`](../references.md).
 
+> **Superseded on two points by #13** (`wayfinder:grilling`, key-material
+> delivery). Its resolution re-cuts this document's key story: `key_retail.bin`
+> **never reaches the device** — the Tag is minted fully signed container-side
+> (#9), so a device-side re-signing module, a device-side `features` bit for key
+> material, and any "upload the key to the board" path are all out. Every
+> "NVS/SPIFFS" or "key in firmware" instruction below is superseded and is kept
+> only as the state before that re-cut. Sections 1.3, Q3, Q5, 6.3, 7.1, 7.2 and
+> 8 carry inline notes.
+
 ---
 
 ## 1. Feasibility Verdict
@@ -18,7 +27,11 @@
    - In `main/src/ns2_codec.c` (lines 180–195), Command `0x01` only handles subcommand `0x0C` with a static 4-byte constant (`61 12 50 10`). Subcommands `0x03` (Start Polling), `0x04` (Stop Polling), `0x05` (Get Status / Tag Detection), `0x06` (Read Device), `0x08` (Write Device), `0x14` (Write Buffer), and `0x15` (Read Buffer) are unhandled stubs returning length 0.
    - In `main/include/controller/hid_controller_pro2.h` (lines 80–84), byte `0x0C` of `hid_report_pro2_t` is defined as `uint8_t unknown_0x0c; // Always 0x00?`. This byte is the real-time NFC processor state (0x00=Idle, 0x01=Polling, 0x02=Tag Detected, etc.). Because it remains permanently `0x00`, the console is never notified that a tag has arrived.
 
-3. **Fresh-Per-Scan Crux (High Confidence - Cryptographic Fact):**
+3. **Fresh-Per-Scan Crux (High Confidence - Cryptographic Fact):**  
+   _(Superseded in part by #13: the freshness requirement and the re-signing
+   flow stand, but "the firmware **must** require the user to provide
+   `key_retail.bin`" does not — the firmware never sees the key. The container
+   holds it and mints the sealed Tag.)_  
    Defeating once-per-day / once-per-save scan limits **CANNOT** be accomplished by swapping the 7-byte UID alone. The NTAG215 format used by Nintendo includes two HMAC-SHA256 signatures (`tag HMAC` at offset `0x1B4` and `data HMAC` at offset `0x034`) whose cryptographic keys are derived using the UID and retail keys (`key_retail.bin`). Swapping the UID without re-encrypting the encrypted regions (AES-128-CTR) and re-signing both HMACs causes the Switch 2 OS to reject the tag as corrupted. The ESP32-S3 hardware accelerators (AES & SHA) can execute this re-signing in ~1.5 ms, but the firmware **must require the user to provide `key_retail.bin`** (160 bytes), as distributing these proprietary Nintendo keys in source/firmware is a copyright violation.
 
 ---
@@ -55,7 +68,12 @@
 - **Does the Answer Change Per Scan?**
   - **For identical replay (standard scan):** The answer does not change.
   - **For FRESH-PER-SCAN (bypassing once-per-day limits):** The UID **MUST CHANGE**. Games index save-file scan records by Amiibo UID. However, because `tag HMAC` and `data HMAC` are SHA-256 hashes generated from keys derived from the UID and master retail keys, **a new random UID invalidates both HMACs**.
-  - **Cryptographic requirement:** Freshness requires:
+  - **Cryptographic requirement:** _(Superseded on location and on the seed width
+    by #13. Steps 2–4 are `nfc3d_amiibo_pack()` over a plaintext whose UID block
+    has been rewritten, and they run **in the container**, not on the device.
+    The seed region is the **8-byte** block at tag offset `0x000` — `UID[7]` is
+    the NTAG215 check byte `BCC0`, not a UID byte — and the HMACs live at tag
+    offsets `0x034` and `0x1B4`.)_ Freshness requires:
     1. Generate random 7-byte UID (with valid `BCC0 = 0x88 ^ UID[0] ^ UID[1] ^ UID[2]` and `BCC1 = UID[3] ^ UID[4] ^ UID[5] ^ UID[6]`).
     2. Decrypt existing dump with `key_retail.bin` using original UID seed.
     3. Re-encrypt with new UID seed using AES-128-CTR.
@@ -76,7 +94,7 @@
   - **Prerequisites:**
     1. Implement subcommands `0x03`, `0x04`, `0x05`, `0x06`, `0x14`, `0x15` in `ns2_codec.c`.
     2. Wire byte `0x0C` in `hid_report_pro2_t` to the NFC state machine.
-    3. Implement user upload of `key_retail.bin` (160 bytes) into NVS/SPIFFS to allow legal on-device re-signing.
+    3. Implement user upload of `key_retail.bin` (160 bytes) into NVS/SPIFFS to allow legal on-device re-signing. **Superseded by #13**: no on-device re-signing, no path by which the key reaches the board.
 - **Branch (b) - Best Fallbacks if BLE NFC Fails or Keys Missing:**
   1. **Fallback 1: Tap to Console / Joy-Con Reader (Zero Firmware Risk, $0 BOM):**
      The Switch 2 console possesses its own built-in NFC reader in the Right Joy-Con and console rails. Dedicated hardware amiibo emulators (AmiiboLink, Flipper Zero, or phone NFC apps like TagMo) tap directly to the console while the ESP32-S3 performs 100% macro replay. This completely decouples macro timing from the complex NFC reverse-engineering stack.
@@ -243,6 +261,13 @@ The KDF outputs 48 bytes:
 - 16 bytes: HMAC-SHA256 Key
 
 ### 6.3 Fresh-Per-Scan Execution Flow on ESP32-S3
+
+> **Superseded by #13 / #9: the flow below runs in the container, not on the
+> ESP32-S3.** Steps 2–4 (KDF, AES-128-CTR, both HMACs) are `nfc3d_amiibo_pack()`
+> on the host; the device receives the finished 540 B Tag over the control link
+> and serves it. `key_retail.bin` never reaches the board, so "using the stored
+> `key_retail.bin` in ESP32 flash" is not merely unbuilt — it is out.
+
 To present the same figure with a fresh scan identity:
 1. **Trigger:** Macro script requests a fresh scan.
 2. **UID Generation:** Generate 7 cryptographically pseudo-random bytes. Byte 0 is set to `0x04` (NXP manufacturer ID). Compute:
@@ -281,6 +306,13 @@ uint8_t nfc_state; // Offset 0x0C: NFC Processor State
 ```
 
 In `main/include/ns2_codec.h`:
+
+> **Superseded by #13 / #9.** The device's NFC state machine is right; the
+> `ns2_nfc_context_t` below is not, because it makes the device hold the identity
+> and the tag buffer it derives from. In the settled design the context carries
+> only the staged 540 B Tag plus polling state, and the container supplies a new
+> already-sealed Tag per placement. Shown as the pre-re-cut shape.
+
 ```c
 #define AMIIBO_TAG_SIZE 540
 
@@ -320,7 +352,7 @@ Extend `cmd_0x01_handler`:
 2. **Current Impediments:** Firmware stubs all Command 0x01 subcommands except `0x0C`, and leaves Report 0x09 byte `0x0C` hardcoded to zero.
 3. **Freshness Barrier:** Bypassing scan limits requires NTAG215 cryptographic re-signing with `key_retail.bin`. The ESP32-S3 has the necessary crypto engines to execute this in ~1.5 ms.
 4. **Immediate Next Steps for Design-Lock:**
-   - Formalize the user-upload interface for `key_retail.bin` (via USB-CDC/Serial or WebUI into NVS).
-   - Implement the NTAG215 re-signing module (`nfc3d` / `amiitool` C port) utilizing ESP-IDF hardware crypto.
+   - ~~Formalize the user-upload interface for `key_retail.bin` (via USB-CDC/Serial or WebUI into NVS).~~ **Superseded by #13**: the key is a user-supplied read-only mount on the container, read once at startup, never written by the container and never uploaded to the board.
+   - ~~Implement the NTAG215 re-signing module (`nfc3d` / `amiitool` C port) utilizing ESP-IDF hardware crypto.~~ **Superseded by #9 / #13**: re-signing is a container-side module (`Figure` bytes + key -> sealed 540 B `Tag`); the firmware runs no `nfc3d` and needs no crypto for NFC.
    - Implement the Command `0x01` subcommands `0x03`, `0x04`, `0x05`, `0x06`, `0x15` in `ns2_codec.c`.
    - Expose the macro trigger to load and re-randomize the active `.bin` buffer.

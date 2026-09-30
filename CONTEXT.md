@@ -32,6 +32,14 @@ _Avoid_: uuid, serial, tag id
 One NTAG215 image: a figure's data signed under one identity.
 _Avoid_: dump, file, bin, amiibo (for the bytes)
 
+**Sealing**:
+The transformation of a figure's raw dump into a Tag: the identity is written in and the data re-encrypted and re-signed under it.
+_Avoid_: packing, signing, re-signing, minting
+
+**Key material**:
+The retail key file a figure's dump must be sealed with. Always the user's own copy, held only by the container, and never sent to the device.
+_Avoid_: key, keys, key_retail.bin, secrets
+
 **Rotation**:
 The replacement of a placed tag with a fresh identity of the same figure.
 _Avoid_: randomise, regenerate, refresh
