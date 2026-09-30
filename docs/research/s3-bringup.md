@@ -36,8 +36,8 @@ Consequently still unknown, and what they block:
 - observed HID report interval against a real console;
 - whether `CONFIG_HID_REPORT_INTERVAL=15` coexists with a 5 ms link;
 - the grip-order / firmware-update-nag behaviour the README describes;
-- whether `CONFIG_SPIRAM_MODE_OCT=y` would boot on this board (not attempted at
-  all — the block is commented out, see §5.2);
+- whether PSRAM works on this board at all (not attempted; PSRAM is left
+  disabled, see §5, item 2).
 
 ---
 
@@ -246,7 +246,7 @@ CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE=y
 CONFIG_BT_BLE_HOST_ALLOW_SUB_SPEC_MIN_CONN_INT=y
 ```
 
-PSRAM is **not** enabled — see §5.2.
+PSRAM is **not** enabled — see §5, item 2.
 
 ---
 
@@ -285,7 +285,7 @@ PSRAM is **not** enabled — see §5.2.
 - `CONFIG_ESPTOOLPY_FLASHMODE` stays `dio`. The N16R8 module supports QIO and
   `EasyMCU_ESP32S3`'s known-good `sdkconfig.n16r8` sets `QIO=y`, but that is a
   different board with a different flash part. Changing flash mode without the
-  hardware is the same class of risk as §5.2 with no upside.
+  hardware is the same class of risk as §5, item 2, with no upside.
 - `CONFIG_HID_REPORT_INTERVAL=15`, which the research doc flags as mismatched
   against a 5 ms link. It is a one-line change with no defensible value until
   the interval can be observed on the wire (§1).
@@ -322,7 +322,7 @@ Recorded rather than edited, since #4 is closed and this is a research artifact:
 | "`CONFIG_..._ENABLE=y` is **completely sufficient**" | true at build level; **unverified on air** | §3 |
 | Recommended app size 1.8–2.2 MB | measured **0.52 MB** today | §4 |
 
-Its PSRAM recommendation is **not** taken: see §5.2 for why that block is now
+Its PSRAM recommendation is **not** taken: see §5, item 2, for why that block is now
 commented out rather than enabled.
 
 The v5.5.4/v5.4.4 errors are the same failure Q17 warns about in the map
