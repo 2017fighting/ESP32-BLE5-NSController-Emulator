@@ -10,6 +10,20 @@ CONFIG_BT_NIMBLE_ENABLED=y
 # Details: docs/research/s3-bringup.md.
 CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE=y
 
+# THE CONSOLE WILL NOT DISCOVER THE BOARD WITH EXTENDED ADVERTISING ENABLED.
+#
+# Measured on a real Switch 2 (2026-09-30): with CONFIG_BT_NIMBLE_EXT_ADV=y the
+# board advertises through NimBLE's ble_gap_ext_adv_*() path; a phone (nRF
+# Connect) sees that advertisement, marks it connectable and shows the correct
+# Nintendo manufacturer data, but the console's grip-order screen never lists
+# the controller. Switching to NimBLE's legacy advertising path
+# (ble_gap_adv_start(), see ble_advertise() in main/src/device.c) makes the
+# console discover and pair it immediately.
+#
+# sdkconfig.defaults sets EXT_ADV=y for every target; this override keeps the
+# S3 on the legacy path. Evidence: docs/research/s3-bringup.md.
+# CONFIG_BT_NIMBLE_EXT_ADV is not set
+
 # use usb cdc for transport layer
 CONFIG_TRANSPORT_LAYER_USB_CDC=y
 CONFIG_TINYUSB_CDC_ENABLED=y

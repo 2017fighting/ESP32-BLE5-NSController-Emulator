@@ -170,15 +170,20 @@ void ble_stack_init(void) {
 
 // **************** BLE Advertise ****************
 
-static uint8_t instance = 0;
-
-/**
- * legacy advertising, not used
- */
-#if 0
-static void ble_advertise_normal() {
+// Legacy advertising (ADV_IND).
+//
+// The reference captures (switch2_controller_research/captures/) show real
+// Switch 2 Pro Controllers transmit a *legacy* ADV_IND: PDU header 0x00, length
+// 37 (6-byte address + 31 bytes of advertising data), flags 06, Nintendo
+// manufacturer data, and an (empty) SCAN_RSP in reply to the console's SCAN_REQ.
+//
+// This deliberately uses NimBLE's legacy advertising API instead of
+// ble_gap_ext_adv_*(). With CONFIG_BT_NIMBLE_EXT_ADV=y the controller drives
+// advertising through the extended-advertising HCI commands; a phone scanner
+// (nRF Connect) accepts that, but the console's SoC-level advertisement filter
+// does not appear to.
+void ble_advertise() {
   int rc;
-  // reset device status
   if (g_controller_firmware.type == CONTROLLER_TYPE_JOYCON) {
     // TODO Joycon
     ESP_LOGE(LOG_APP, "Joycon not implemented");
@@ -187,11 +192,11 @@ static void ble_advertise_normal() {
   device_status_set(DEV_ADV_IND);
 
   if (ble_gap_adv_active()) {
-    ESP_LOGI(LOG_APP, "Advertising instance already active");
+    ESP_LOGI(LOG_APP, "Advertising already active");
     return;
   }
+
   struct ble_gap_adv_params adv_params;
-  
   memset(&adv_params, 0, sizeof(adv_params));
   adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
   adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
@@ -206,12 +211,13 @@ static void ble_advertise_normal() {
   uint8_t adv_data[sizeof(m_head) + sizeof(m_spec) + sizeof(g_controller_firmware.manufacturer_data)];
   memcpy(adv_data, m_head, sizeof(m_head));
   memcpy(adv_data + sizeof(m_head), m_spec, sizeof(m_spec));
-  // TODO test wakeup flag
   if (g_adv_opcode != 0x00) {
     g_controller_firmware.manufacturer_data[11] = g_adv_opcode;
+    // restart adv must set ns2 addr
+    memcpy(&g_controller_firmware.manufacturer_data[12], g_console_ns2.ble_addr.val, ESP_BD_ADDR_LEN);
   }
-  memcpy(adv_data + sizeof(m_head) + sizeof(m_spec), 
-         g_controller_firmware.manufacturer_data, 
+  memcpy(adv_data + sizeof(m_head) + sizeof(m_spec),
+         g_controller_firmware.manufacturer_data,
          sizeof(g_controller_firmware.manufacturer_data));
 
   rc = ble_gap_adv_set_data(adv_data, sizeof(adv_data));
@@ -220,99 +226,12 @@ static void ble_advertise_normal() {
     return;
   }
 
-  // start advertising
   rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params, handle_gap_event, NULL);
   if (rc != 0) {
-    ESP_LOGE(LOG_APP, "Error enabling extended advertising; rc=%d", rc);
+    ESP_LOGE(LOG_APP, "Error starting advertising; rc=%d", rc);
     return;
   }
-
-}
-#endif
-
-void ble_advertise() {
-  // ble_advertise_normal();
-  int rc;
-  // reset device status
-  if (g_controller_firmware.type == CONTROLLER_TYPE_JOYCON) {
-    // TODO Joycon
-    ESP_LOGE(LOG_APP, "Joycon not implemented");
-    return;
-  }
-  device_status_set(DEV_ADV_IND);
-
-  // only one instance advertising
-  if (ble_gap_ext_adv_active(instance)) {
-    ESP_LOGI(LOG_APP, "Advertising instance %d already active", instance);
-    return;
-  }
-
-  // reset adv params
-  struct ble_gap_ext_adv_params ext_adv_params;
-  memset(&ext_adv_params, 0, sizeof(ext_adv_params));
-  ext_adv_params.legacy_pdu = 1;
-  ext_adv_params.connectable = 1;
-  ext_adv_params.scannable = 1;
-  ext_adv_params.directed = 0;
-
-  ext_adv_params.own_addr_type = BLE_OWN_ADDR_PUBLIC;
-  ext_adv_params.primary_phy = BLE_HCI_LE_PHY_1M;
-  ext_adv_params.secondary_phy = BLE_HCI_LE_PHY_1M;
-  ext_adv_params.itvl_min = BLE_GAP_ADV_FAST_INTERVAL1_MIN; // 30ms
-  ext_adv_params.itvl_max = BLE_GAP_ADV_FAST_INTERVAL1_MIN; // 30ms
-  ext_adv_params.channel_map = BLE_GAP_ADV_DFLT_CHANNEL_MAP;
-  ext_adv_params.sid = 0;
-  // ext_adv_params.tx_power = 127;
-  ext_adv_params.scan_req_notif = false;
-  ext_adv_params.filter_policy = BLE_HCI_SCAN_FILT_NO_WL;
-
-  rc = ble_gap_ext_adv_configure(instance, 
-    &ext_adv_params, NULL, handle_gap_event, NULL);
-  if (rc != 0) {
-    ESP_LOGE(LOG_APP, "Error configuring extended advertising instance %d; rc=%d", instance, rc);
-    return;
-  }
-
-  // set manufacturer data
-  ESP_LOGI(LOG_APP, "Setting manufacturer data for advertising");
-  struct os_mbuf* adv_data;
-  uint8_t m_len = sizeof(g_controller_firmware.manufacturer_data) + 5;
-  uint8_t m_data[m_len];
-  // Flags 0x01 LE General Discoverable + BR/EDR Not Supported
-  uint8_t m_head[3] = { 0x02, 0x01, 0x06 };
-  // Manufacturer Specific Data, len + 0xFF + manufacturer_data
-  uint8_t m_size = sizeof(g_controller_firmware.manufacturer_data) + 1;
-  uint8_t m_spec[2] = { m_size, 0xFF };
-  memcpy(m_data, m_head, sizeof(m_head));
-  memcpy(m_data + sizeof(m_head), m_spec, sizeof(m_spec));
-  // TODO test wakeup flag
-  if (g_adv_opcode != 0x00) {
-    g_controller_firmware.manufacturer_data[11] = g_adv_opcode;
-    // restart adv must set ns2 addr
-    memcpy(&g_controller_firmware.manufacturer_data[12], g_console_ns2.ble_addr.val, ESP_BD_ADDR_LEN);
-  }
-  memcpy(m_data + sizeof(m_head) + sizeof(m_spec), g_controller_firmware.manufacturer_data, sizeof(g_controller_firmware.manufacturer_data));
-
-  adv_data = os_msys_get_pkthdr(sizeof(m_data), 0);
-  rc = os_mbuf_append(adv_data, m_data, sizeof(m_data));
-  if (rc != 0) {
-    ESP_LOGE(LOG_APP, "Error appending manufacturer data to mbuf; rc=%d", rc);
-    os_mbuf_free_chain(adv_data);
-    return;
-  }
-  rc = ble_gap_ext_adv_set_data(instance, adv_data);
-  if (rc != 0) {
-    ESP_LOGE(LOG_APP, "Error setting manufacturer data for advertising; rc=%d", rc);
-    os_mbuf_free_chain(adv_data);
-    return;
-  }
-
-  // start advertising
-  rc = ble_gap_ext_adv_start(instance, 0, 0);
-  if (rc != 0) {
-    ESP_LOGE(LOG_APP, "Error enabling extended advertising; rc=%d", rc);
-    return;
-  }
+  ESP_LOGI(LOG_APP, "Legacy advertising started (ADV_IND)");
 }
 
 // **************** BLE Subscription ****************
