@@ -4,18 +4,21 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 ## Target repo
 
-This clone has four remotes; `origin` is **upstream**, not where we track work:
+This clone has four remotes; `origin` is **our fork**, which is where we track work:
 
-| Remote    | Repo                                              | Role                          |
-| --------- | ------------------------------------------------- | ----------------------------- |
-| `origin`  | `zhantss/ESP32-BLE5-NSController-Emulator`        | upstream (do not target)      |
-| `mine`    | `2017fighting/ESP32-BLE5-NSController-Emulator`   | **our fork — target this**    |
-| `fix`     | `xioxin/ESP32-BLE5-NSController-Emulator`         | reference fork                |
-| `easycon` | `EasyConNS/EasyMCU_ESP32C61`                      | related project               |
+| Remote     | Repo                                              | Role                          |
+| ---------- | ------------------------------------------------- | ----------------------------- |
+| `origin`   | `2017fighting/ESP32-BLE5-NSController-Emulator`   | **our fork — target this**    |
+| `upstream` | `zhantss/ESP32-BLE5-NSController-Emulator`        | upstream (do not target)      |
+| `fix`      | `xioxin/ESP32-BLE5-NSController-Emulator`         | reference fork                |
+| `easycon`  | `EasyConNS/EasyMCU_ESP32C61`                      | related project               |
 
 **Always pass `--repo 2017fighting/ESP32-BLE5-NSController-Emulator`** to `gh`. Do not rely on
-`gh`'s automatic inference from `git remote -v`: with `origin` tracked and pointing at upstream,
-inference silently targets the wrong repository.
+`gh`'s automatic inference from `git remote -v`: with four remotes tracked, which one it picks is
+not worth depending on.
+
+External repos this effort reads (protocol sources, macro library, amiibo images) are separate
+from these remotes and are listed in `docs/references.md`.
 
 Export once per session to keep commands short:
 

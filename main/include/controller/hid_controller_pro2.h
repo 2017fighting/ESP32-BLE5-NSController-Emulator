@@ -13,7 +13,7 @@ extern "C" {
 #define PRO2_STICK_CENTER   0x800
 
 // pro2 button format
-// https://github.com/ndeadly/switch2_controller_research/blob/master/hid_reports.md#button-format-3
+// switch2_controller_research/hid_reports.md#button-format-3
 typedef struct {
     // Buttons Byte 0
     uint8_t B        : 1; // 0x01

@@ -13,7 +13,7 @@
 
 ### 1.1 The C6/C61 Patch Mechanism (`patch_nimble_lib.py`)
 
-- **Target File:** `$IDF_PATH/components/bt/controller/lib_esp32c6/esp32c6-bt-lib/esp32c6/libble_app.a` or `esp32c61/libble_app.a` (*Source: `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/patch/patch_nimble_lib.py`, lines 71–76*).
+- **Target File:** `$IDF_PATH/components/bt/controller/lib_esp32c6/esp32c6-bt-lib/esp32c6/libble_app.a` or `esp32c61/libble_app.a` (*Source: `patch/patch_nimble_lib.py`, lines 71–76*).
 - **Architecture & Toolchain:** RISC-V (`riscv32-esp-elf-ar`, `riscv32-esp-elf-objdump`) (*Source: lines 26–64*).
 - **Patch Operation:**
   - Extracts object `ble_ll_conn.c.o` from the static archive `libble_app.a` (*Source: lines 288–292*).
@@ -103,11 +103,11 @@ Inspection of the primary source commits (`cf13345`, `aefcf1c`, `142aea3`) and c
 
 ### 2.1 Current Project State
 
-- In `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/sdkconfig.defaults.esp32s3`:
+- In `sdkconfig.defaults.esp32s3`:
   - `CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y` (*Source: line 17*)
   - `CONFIG_PARTITION_TABLE_CUSTOM=y` (*Source: line 18*)
   - `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_n2c.csv"` (*Source: line 19*)
-- In `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/partitions_n2c.csv`:
+- In `partitions_n2c.csv`:
   ```csv
   # Name,   Type, SubType, Offset,  Size, Flags
   nvs,      data, nvs,     ,        0x6000,
@@ -124,14 +124,14 @@ Inspection of the primary source commits (`cf13345`, `aefcf1c`, `142aea3`) and c
 
 ### 2.2 Comparison with `EasyMCU_ESP32S3`
 
-- **Hardware Context:** `EasyMCU_ESP32S3` runs on the identical hardware: ESP32-S3-DevKitC-1 N16R8 (*Source: `/home/zhao/clone/EasyMCU_ESP32S3/README.md` lines 7–8*).
+- **Hardware Context:** `EasyMCU_ESP32S3` runs on the identical hardware: ESP32-S3-DevKitC-1 N16R8 (*Source: `EasyMCU_ESP32S3/README.md` lines 7–8*).
 - **EasyMCU Configuration (`sdkconfig.n16r8`):**
   - `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y`
   - `CONFIG_ESPTOOLPY_FLASHFREQ_80M=y`
   - `CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y`
   - `CONFIG_SPIRAM_TYPE_ESP32S3_OCTAL=y`
   - `CONFIG_SPIRAM_SIZE=8388608`
-  *(Source: `/home/zhao/clone/EasyMCU_ESP32S3/sdkconfig.n16r8` lines 1–5)*
+  *(Source: `EasyMCU_ESP32S3/sdkconfig.n16r8` lines 1–5)*
 - **EasyMCU Partition Layout (`partitions_16mb.csv`):**
   ```csv
   # Name,   Type, SubType, Offset,   Size,     Flags
@@ -140,9 +140,9 @@ Inspection of the primary source commits (`cf13345`, `aefcf1c`, `142aea3`) and c
   factory,  app,  factory, 0x10000,  0x600000,  
   storage,  data, nvs,     0x610000, 0x9E0000,
   ```
-  *(Source: `/home/zhao/clone/EasyMCU_ESP32S3/partitions_16mb.csv` lines 1–5)*
+  *(Source: `EasyMCU_ESP32S3/partitions_16mb.csv` lines 1–5)*
 - **Why EasyMCU Used 10 MB NVS:**
-  In `/home/zhao/clone/EasyMCU_ESP32S3/main/storage/storage.c` (lines 17–37):
+  In `EasyMCU_ESP32S3/main/storage/storage.c` (lines 17–37):
   ```c
   uint8_t EasyCon_read_byte(uint16_t addr) {
       char key[16];
@@ -316,7 +316,7 @@ The ESP32-S3-DevKitC-1 N16R8 board features **two physical USB-C ports**. Unders
 
 ### Port 2: "USB" Port
 - **Connection:** Routes directly into the ESP32-S3 on-chip Full-Speed USB OTG peripheral PHY on GPIO19 (D-) and GPIO20 (D+).
-- **Firmware Binding:** Bound to TinyUSB CDC ACM via `CONFIG_TRANSPORT_LAYER_USB_CDC=y` and `transport_usb_cdc.c` (*Source: `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/main/src/transport/transport_usb_cdc.c`*).
+- **Firmware Binding:** Bound to TinyUSB CDC ACM via `CONFIG_TRANSPORT_LAYER_USB_CDC=y` and `transport_usb_cdc.c` (*Source: `main/src/transport/transport_usb_cdc.c`*).
 - **Roles:**
   1. **Primary Control Plane Interface:** The host PC (running EasyCon, automated scripts, or GUI) connects here.
   2. Transmits button/joystick commands, macro schedules, and Amiibo emulation requests.
@@ -330,10 +330,10 @@ The ESP32-S3-DevKitC-1 N16R8 board features **two physical USB-C ports**. Unders
 |---|---|---|---|
 | S3 5 ms link requires upstream ESP-IDF fix | Direct Evidence | High | GitHub Issue #18467; author tests confirm binary patches in `libbtdm_app.a` still resulted in `LL_REJECT_EXT_IND`. |
 | S3 5 ms fix officially merged and released | Direct Evidence | High | GitHub Issue #18467 (comment 2026-06-01T11:14:39Z by `esp-zhp`); Git commits `cf13345` (v5.5), `142aea3` (v6.0), `aefcf1c` (v5.4), `fb3cac4d4` (v5.2). |
-| `patch_nimble_lib.py` cannot patch S3 | Direct Evidence | High | `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/patch/patch_nimble_lib.py`, lines 80–91. |
+| `patch_nimble_lib.py` cannot patch S3 | Direct Evidence | High | `patch/patch_nimble_lib.py`, lines 80–91. |
 | `CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE=y` is sufficient on v5.5.4+ | Direct Evidence | High | `components/bt/controller/esp32c3/Kconfig.in`; `components/bt/controller/esp32c3/bt.c` calling `ble_min_conn_interval_enable(3)`. |
-| Current repo flash setting is 8MB | Direct Evidence | High | `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/sdkconfig.defaults.esp32s3`, line 17 (`CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y`). |
-| EasyMCU 10MB NVS was for single-byte EEPROM emulation | Direct Evidence | High | `/home/zhao/clone/EasyMCU_ESP32S3/main/storage/storage.c`, lines 17–37; `partitions_16mb.csv`, line 5. |
+| Current repo flash setting is 8MB | Direct Evidence | High | `sdkconfig.defaults.esp32s3`, line 17 (`CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y`). |
+| EasyMCU 10MB NVS was for single-byte EEPROM emulation | Direct Evidence | High | `EasyMCU_ESP32S3/main/storage/storage.c`, lines 17–37; `partitions_16mb.csv`, line 5. |
 | Filesystem partition (SPIFFS/LittleFS) is superior for Amiibo/Macros | Researcher Inference | High | 540 bytes per Amiibo dump; 1000 Amiibos = ~540 KB. Raw file storage avoids 32-byte per-entry NVS overhead. |
 | DevKitC-1 "COM" vs "USB" port separation | Direct Evidence | High | ESP32-S3-DevKitC-1 Schematics; `transport_usb_cdc.c` using native TinyUSB; `EasyMCU_ESP32S3/README.md` lines 12–21. |
 
@@ -355,13 +355,13 @@ The ESP32-S3-DevKitC-1 N16R8 board features **two physical USB-C ports**. Unders
 ## Sources
 
 ### Kept Sources
-1. `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/patch/patch_nimble_lib.py` — Primary source for binary patch logic, target checks, and RISC-V instruction patterns.
-2. `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/sdkconfig.defaults.esp32s3` — Primary source for current S3 configuration and Kconfig symbols.
+1. `patch/patch_nimble_lib.py` — Primary source for binary patch logic, target checks, and RISC-V instruction patterns.
+2. `sdkconfig.defaults.esp32s3` — Primary source for current S3 configuration and Kconfig symbols.
 3. `https://github.com/espressif/esp-idf/issues/18467` — Authoritative tracking issue documenting S3 5 ms failure, vendor communication, test patches, and final upstream merge commits.
 4. `https://github.com/espressif/esp-idf/commit/cf13345.patch` — Primary git patch showing relaxation of `BLE_CONN_INT_MIN_HOST_CHECK` across host GAP/GATT APIs.
 5. `https://raw.githubusercontent.com/espressif/esp-idf/master/components/bt/controller/esp32c3/Kconfig.in` & `bt.c` — Primary source for `CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE` and invocation of `ble_min_conn_interval_enable(3)`.
-6. `/home/zhao/clone/EasyMCU_ESP32S3/sdkconfig.n16r8` & `partitions_16mb.csv` & `main/storage/storage.c` — Primary source for reference S3 N16R8 configuration and partition sizing justification.
-7. `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/scripts/package_firmware.py` — Primary source for packaging and flash size extraction behavior.
+6. `EasyMCU_ESP32S3/sdkconfig.n16r8` & `partitions_16mb.csv` & `main/storage/storage.c` — Primary source for reference S3 N16R8 configuration and partition sizing justification.
+7. `scripts/package_firmware.py` — Primary source for packaging and flash size extraction behavior.
 
 ### Rejected / Deprioritized Sources
 1. Generic ESP-IDF forum threads discussing standard BLE 7.5 ms limits — Did not address the non-standard 5 ms link or closed-source controller internals.

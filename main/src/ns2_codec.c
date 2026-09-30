@@ -368,7 +368,7 @@ static uint8_t cmd_0x0c_handler(const uint8_t subcmd, const uint16_t payload_len
 static uint8_t cmd_0x10_handler(const uint8_t subcmd, const uint16_t payload_len,
     const uint8_t* data_in, uint8_t* data_out) {
     switch(subcmd) {
-        // https://github.com/ndeadly/switch2_controller_research/blob/master/commands.md#command-0x10---firmware-info
+        // switch2_controller_research/commands.md#command-0x10---firmware-info
         // major minor micro(firmware version) | type(JC-L0x00 JC-R0x01 Pro20x02) | mmm(bluetooth patch version) | padding | mmm(DSP firmware version) | padding
         // 01 00 0e 02 0c 00 00 00 ff ff ff ff
         case 0x01:

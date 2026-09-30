@@ -252,7 +252,7 @@ If the Central sends `LL_CONNECTION_PARAM_REQ` (opcode `0x0F`):
 ## 4. Empirical Grounding and Upstream Verification
 
 1. **Firmware Configuration in this Repository:**
-   - In `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/sdkconfig.defaults.esp32s3`:
+   - In `sdkconfig.defaults.esp32s3`:
      ```ini
      CONFIG_IDF_TARGET="esp32s3"
      CONFIG_BT_ENABLED=y
@@ -263,7 +263,7 @@ If the Central sends `LL_CONNECTION_PARAM_REQ` (opcode `0x0F`):
      CONFIG_BTDM_CTRL_MODE_BTDM=n
      CONFIG_BT_BLUEDROID_ENABLED=n
      ```
-   - In `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/main/src/gap.c` (lines 40–50):
+   - In `main/src/gap.c` (lines 40–50):
      ```c
      case BLE_GAP_EVENT_CONNECT:
          ...

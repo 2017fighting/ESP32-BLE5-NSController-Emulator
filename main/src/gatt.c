@@ -5,7 +5,7 @@
 
 // #region GATT UUID
 
-// https://github.com/ndeadly/switch2_controller_research/blob/master/bluetooth_interface.md#gatt-attributes
+// switch2_controller_research/bluetooth_interface.md#gatt-attributes
 
 // Primary Service 0x0001-0x0007 UUID 00c5af5d-1964-4e30-8f51-1956f96bd280
 static const ble_uuid128_t GATT_ALL_PRIMARY_SERVICE_0x0001_0x0007 = BLE_UUID128_INIT(
@@ -56,7 +56,7 @@ static const ble_uuid128_t GATT_ALL_CHARACTERISTIC_0x000a = BLE_UUID128_INIT(
 );
 
 // Input Report 所有类型控制器的 0x05 HID报告
-// https://github.com/ndeadly/switch2_controller_research/blob/master/hid_reports.md#input-report-0x05
+// switch2_controller_research/hid_reports.md#input-report-0x05
 // Read/Notify 0x000a ab7de9be-89fe-49ad-828f-118f09df7fd2
 static uint16_t gatt_svr_chr_000a_val_handle;
 
@@ -73,7 +73,7 @@ static const ble_uuid128_t GATT_PRO2_CHARACTERISTIC_0x000e = BLE_UUID128_INIT(
 );
 
 // Info Report Pro2手柄 0x09 HID报告
-// https://github.com/ndeadly/switch2_controller_research/blob/master/hid_reports.md#input-report-0x09
+// switch2_controller_research/hid_reports.md#input-report-0x09
 // Read/Notify 0x000e 7492866c-ec3e-4619-8258-32755ffcc0f8
 static uint16_t gatt_svr_chr_000e_val_handle;
 

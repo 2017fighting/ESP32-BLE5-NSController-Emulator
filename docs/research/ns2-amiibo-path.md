@@ -2,7 +2,7 @@
 
 **Target Artifact:** Design-Lock Protocol & Feasibility Reference  
 **Scope:** ESP32-S3-N16R8 emulating Nintendo Switch 2 Pro Controller over BLE  
-**Authoritative Output Path:** `/home/zhao/.pi/agent/sessions/--home-zhao-clone-ESP32-BLE5-NSController-Emulator--/subagent-artifacts/outputs/615fa934-577c-46b1-bf44-39ab76183777/research-amiibo-path.md`
+**Sources:** cited by alias against the pins in [`docs/references.md`](../references.md).
 
 ---
 
@@ -34,7 +34,7 @@
 - **Shape:** It is a **chunked read/write buffer model coupled with an NFC processor state machine**. It is **NOT** related to Command `0x02` (Flash Memory). Command `0x02` accesses the controller's internal 2MB SPI flash for board calibration, colors, and pairing info; it does not touch NFC tag data.
 
 ### Question 2: Console-Led or Controller-Initiated?
-- **Evidence:** Captured protocol headers in `/home/zhao/clone/switch2_controller_research/commands.md` (lines 11–20, 50–90) and `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/main/src/ns2_codec.c` (lines 620–635).
+- **Evidence:** Captured protocol headers in `switch2_controller_research/commands.md` (lines 11–20, 50–90) and `main/src/ns2_codec.c` (lines 620–635).
 - **Finding:**
   - **Transport layer:** Strictly **CONSOLE-LED**. In the NS2 command protocol, the host issues commands with direction `0x91` (Host->Device request). The controller never issues autonomous `0x91` commands; it only replies with direction `0x01` (Device->Host response) and ACK `0x78` (BLE) or `0xF8` (USB).
   - **Interaction layer:** **CONTROLLER-SIGNALED, CONSOLE-DISPATCHED**. When the console activates polling via Subcommand `0x01/0x03`, the controller signals tag presence by transitioning byte `0x0C` of Input Report `0x09` from `0x01` (polling) to `0x02`/`0x07`/`0x09` (tag detected). The console reads this in the continuous 60Hz BLE input notifications, then issues Subcommand `0x05` (Get Status) followed by Subcommands `0x06` (Read Device) and `0x15` (Read Buffer).
@@ -64,7 +64,7 @@
   - If HMACs are not re-signed, the console's `nfp` service rejects the tag as corrupted.
 
 ### Question 4: Relationship Between `.bin` (540B) and `.nfc` (3352B)
-- **Primary Evidence:** `/home/zhao/clone/Amiibo/Amiibo NFC/Kirby/Kirby.nfc` (lines 1–35) and `/home/zhao/clone/Amiibo/Amiibo Bin/!Essential Files/key_retail.bin`.
+- **Primary Evidence:** `Amiibo/Amiibo NFC/Kirby/Kirby.nfc` (lines 1–35) and `Amiibo/Amiibo Bin/!Essential Files/key_retail.bin`.
 - **Finding:**
   - `.bin` (540 bytes) is the **exact raw binary dump** of an NTAG215 chip ($135 \text{ pages} \times 4 \text{ bytes/page} = 540 \text{ bytes}$).
   - `.nfc` (3352 bytes) is a **Flipper Zero plaintext ASCII configuration file**. It contains ASCII headers (`Filetype: Flipper NFC device`, `Device type: NTAG215`, `UID: ...`) followed by 135 text lines of `Page X: XX XX XX XX\n` ($135 \times \sim 22 \text{ bytes} \approx 2970 \text{ bytes}$ text).
@@ -101,7 +101,7 @@
 
 ## 3. Dissecting the `esp32-joycontrol` Hypothesis
 
-The prior project `/home/zhao/clone/esp32-joycontrol` attempted amiibo emulation on Switch 1 and failed. Its documentation claimed:
+The prior project `esp32-joycontrol` attempted amiibo emulation on Switch 1 and failed. Its documentation claimed:
 1. "NFC is console-led and a controller cannot inject tag data."
 2. "On BT-classic to NS1 the console sent zero NFC commands and ignored 540 bytes pushed proactively, showing a right Joy-Con icon on screen."
 
@@ -126,14 +126,14 @@ All protocol assertions are derived from primary source artifacts:
 
 | Domain | Primary Source File & Reference | Documented Fact / Observation | Inferred Conclusion |
 |---|---|---|---|
-| **NFC Command 0x01** | `/home/zhao/clone/switch2_controller_research/commands.md` (lines 47–100) | Documents subcommands `0x03` (poll start), `0x04` (poll stop), `0x05` (get status), `0x06` (read device), `0x08` (write device), `0x0C` (probe), `0x14` (write buffer), `0x15` (read buffer). | Tag data is exchanged using a buffer window (`0x14`/`0x15`) rather than streaming HID reports. *(High Confidence)* |
-| **NFC State Byte** | `/home/zhao/clone/switch2_controller_research/hid_reports.md` (lines 170–190) | Input Report `0x09` (Pro Controller 2) offset `0x0C` is documented as `NFC state (0x00-0x07, 0x00=Idle)`. | Input report byte `0x0C` notifies the console when a tag is in field. *(High Confidence)* |
-| **GATT Attribute Map** | `/home/zhao/clone/switch2_controller_research/bluetooth_interface.md` (lines 115–185) | Handle `0x0014` = Command output, `0x0016` = Vibration + Command, `0x001a` = Command response notify, `0x000e` = Input Report 0x09 notify. | NS2 commands use bidirectional GATT attributes rather than HID descriptor reports. *(High Confidence)* |
-| **NFC Controller IC** | `/home/zhao/clone/switch2_controller_research/datasheets/PN7160_PN7161.pdf` & `commands.md` | Switch 2 uses NXP PN7160 NCI controller; subcmd `0x0C` returns NCI-compatible header `61 12 50 0d`. | Command `0x01` encapsulates NCI frames to/from the PN7160. *(High Confidence)* |
-| **Tag Data Format** | `/home/zhao/clone/Amiibo/Amiibo NFC/Kirby/Kirby.nfc` & `/home/zhao/clone/Amiibo/Amiibo Bin/!Essential Files/key_retail.bin` | `.nfc` is Flipper Zero ASCII dump (3352 bytes). `.bin` is raw NTAG215 (540 bytes). `key_retail.bin` is 160 bytes. | `.bin` is the direct unit of input for firmware; `.nfc` is an ASCII wrapper. *(High Confidence)* |
-| **Cryptographic Re-Signing** | `amiitool` algorithms & `/home/zhao/clone/esp32-joycontrol/docs/protocol-notes.md` (lines 100–125) | Tag HMAC and Data HMAC are HMAC-SHA256 signatures binding the 7-byte UID to data sections. | UID randomization without HMAC re-signing will be rejected by the Switch 2 OS. *(High Confidence)* |
-| **Current Firmware Implementation** | `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/main/src/ns2_codec.c` (lines 180–195) | Only subcmd `0x0C` is handled (returns `61 12 50 10`). All other subcommands return 0x00. | Firmware currently drops all console NFC read/write requests. *(High Confidence)* |
-| **Pro2 HID Struct Gap** | `/home/zhao/clone/ESP32-BLE5-NSController-Emulator/main/include/controller/hid_controller_pro2.h` (lines 80–84) | Field at offset `0x0C` is named `unknown_0x0c` and fixed to `0x00`. | Controller never signals tag presence to the console. *(High Confidence)* |
+| **NFC Command 0x01** | `switch2_controller_research/commands.md` (lines 47–100) | Documents subcommands `0x03` (poll start), `0x04` (poll stop), `0x05` (get status), `0x06` (read device), `0x08` (write device), `0x0C` (probe), `0x14` (write buffer), `0x15` (read buffer). | Tag data is exchanged using a buffer window (`0x14`/`0x15`) rather than streaming HID reports. *(High Confidence)* |
+| **NFC State Byte** | `switch2_controller_research/hid_reports.md` (lines 170–190) | Input Report `0x09` (Pro Controller 2) offset `0x0C` is documented as `NFC state (0x00-0x07, 0x00=Idle)`. | Input report byte `0x0C` notifies the console when a tag is in field. *(High Confidence)* |
+| **GATT Attribute Map** | `switch2_controller_research/bluetooth_interface.md` (lines 115–185) | Handle `0x0014` = Command output, `0x0016` = Vibration + Command, `0x001a` = Command response notify, `0x000e` = Input Report 0x09 notify. | NS2 commands use bidirectional GATT attributes rather than HID descriptor reports. *(High Confidence)* |
+| **NFC Controller IC** | `switch2_controller_research/datasheets/PN7160_PN7161.pdf` & `commands.md` | Switch 2 uses NXP PN7160 NCI controller; subcmd `0x0C` returns NCI-compatible header `61 12 50 0d`. | Command `0x01` encapsulates NCI frames to/from the PN7160. *(High Confidence)* |
+| **Tag Data Format** | `Amiibo/Amiibo NFC/Kirby/Kirby.nfc` & `Amiibo/Amiibo Bin/!Essential Files/key_retail.bin` | `.nfc` is Flipper Zero ASCII dump (3352 bytes). `.bin` is raw NTAG215 (540 bytes). `key_retail.bin` is 160 bytes. | `.bin` is the direct unit of input for firmware; `.nfc` is an ASCII wrapper. *(High Confidence)* |
+| **Cryptographic Re-Signing** | `amiitool` algorithms & `esp32-joycontrol/docs/protocol-notes.md` (lines 100–125) | Tag HMAC and Data HMAC are HMAC-SHA256 signatures binding the 7-byte UID to data sections. | UID randomization without HMAC re-signing will be rejected by the Switch 2 OS. *(High Confidence)* |
+| **Current Firmware Implementation** | `main/src/ns2_codec.c` (lines 180–195) | Only subcmd `0x0C` is handled (returns `61 12 50 10`). All other subcommands return 0x00. | Firmware currently drops all console NFC read/write requests. *(High Confidence)* |
+| **Pro2 HID Struct Gap** | `main/include/controller/hid_controller_pro2.h` (lines 80–84) | Field at offset `0x0C` is named `unknown_0x0c` and fixed to `0x00`. | Controller never signals tag presence to the console. *(High Confidence)* |
 
 ---
 
