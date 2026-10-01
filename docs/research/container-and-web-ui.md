@@ -54,8 +54,9 @@ authority is `prototype/web-ui/src/index.css`.
 
 | Check | Tool | Result |
 | --- | --- | --- |
-| WCAG 2.0/2.1/2.2 A+AA, 22 states × 2 themes × 3 widths | axe-core via Playwright | **0 violations** |
-| Browser console/page errors, 22 states | Playwright console listener | **0** |
+| Screenshots, 22 states | dark 375/768/1440 + light 1440 (88 total) |
+| WCAG 2.0/2.1/2.2 A+AA — axe-core, 22 states × 3 viewport/theme configurations (dark 375, dark 1440, light 1440) | **0 violations** |
+| Browser console/page errors, 22 states | **0** |
 | shadcn colour/radius/spacing trace to tokens (no raw hex/px) | `validate_mockup{system:"shadcn"}` L1 | **PASS** |
 | Contrast floor | `validate_mockup` L2 | **PASS** |
 | Visible focus on every focusable element (keyboard walk, 18 elements) | `scripts/gate-checks.mjs` | **PASS** |

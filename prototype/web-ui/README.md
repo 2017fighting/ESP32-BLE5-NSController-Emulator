@@ -45,7 +45,8 @@ The bundled `score_mockup` tool cannot import Playwright from this repo, so the
 loop uses two scripts with the same rubric plus the rendered a11y gate:
 
 ```sh
-# 88 screenshots across 22 states × 2 themes × 3 widths + axe-core
+# 88 screenshots (22 states: dark 375/768/1440 + light 1440) + axe-core
+# (22 states × 3 configs: dark 375, dark 1440, light 1440)
 LD_LIBRARY_PATH=/tmp/chromedeps/usr/lib node scripts/capture.mjs --url http://localhost:4173
 # focus visibility, target size, reduced-motion, zoom — checks axe cannot make
 LD_LIBRARY_PATH=/tmp/chromedeps/usr/lib node scripts/gate-checks.mjs --url http://localhost:4173
@@ -58,7 +59,7 @@ Arch box has no `atk` and no passwordless sudo). On a normal dev machine,
 
 Last recorded run:
 
-- `capture.mjs` — **0 axe violations** (WCAG 2.0/2.1/2.2 A+AA) and **0 console errors** across 22 states × 2 themes × 3 widths.
+- `capture.mjs` — **0 axe violations** (WCAG 2.0/2.1/2.2 A+AA; 22 states × 3 viewport/theme configs) and **0 console errors** across 22 states.
 - `gate-checks.mjs` — **7/7**: zoom enabled, primary action 44px, visible focus on all 18 focusable elements, no target < 24px, reduced-motion collapses transitions, both themes applied.
 - shadcn L1 token-lint and L2 contrast gates — PASS (`validate_mockup{system:"shadcn"}`).
 
