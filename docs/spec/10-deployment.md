@@ -1,0 +1,156 @@
+# 10 · Deployment
+
+Two artifacts, deployed separately: the firmware is flashed to the board by hand, and the
+container runs next to the board with the device passed through and three mounts.
+
+## 10.1 Build the firmware
+
+**The ESP-IDF floor is `v5.5.5`.** This is a hard floor, not a preference, and the failure
+mode is silent: on an earlier version the assignment
+`CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE=y` produces only
+`warning: unknown kconfig symbol … assigned to 'y'`, the symbol is absent from `sdkconfig`
+and never `#define`d, **and the build still succeeds** with a firmware that rejects the
+console's 5 ms interval at run time. Confirmed at binary level:
+`ble_min_conn_interval_enable` is absent from v5.5.4's `libbtdm_app.a` for `esp32s3` and
+present in v5.5.5's. (A research record claims v5.5.4+; it is wrong, and it is corrected here
+rather than carried.)
+
+```sh
+git clone -b v5.5.5 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf-v5.5.5
+cd ~/esp/esp-idf-v5.5.5 && ./install.sh esp32s3 && . ./export.sh
+
+cd <repo>
+idf.py set-target esp32s3      # pulls sdkconfig.defaults + sdkconfig.defaults.esp32s3
+idf.py build
+python scripts/package_firmware_v5.py    # -> release/ns-controller-esp32s3n16.bin
+```
+
+**`patch/patch_nimble_lib.py` must not be run for S3.** It rewrites `ble_ll_conn.c.o` in a
+RISC-V `libble_app.a` for C6/C61-class targets, and it rejects `esp32s3` itself. S3 needs no
+patch: the Kconfig symbol alone suffices at build level.
+
+**Use `package_firmware_v5.py`, not `package_firmware.py`.** The non-`v5` script matches
+`--flash-size` while `flash_args` emits `--flash_size`, so it prints
+`Error: Could not extract flash size` and **exits 0** — a packaging failure that looks like
+success and would ship an `n8` image name for a 16 MB module. *(Two corrections to the earlier
+research recipe, both recorded rather than silently applied: it names a `v5.5.4` floor and
+tells you to run the broken script.)*
+
+**Config the S3 must keep** (`sdkconfig.defaults.esp32s3` already sets all of it):
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE` | `y` | the sub-spec path; harmless and unexercised today (§7.6) |
+| `CONFIG_BT_NIMBLE_EXT_ADV` | **not set** | **the console cannot see the board with extended advertising** (below) |
+| `CONFIG_TRANSPORT_LAYER_USB_CDC` | `y` | the native OTG path, reserved (ADR-0001) |
+| `CONFIG_ESPTOOLPY_FLASHSIZE_16MB` + `partitions_16mb_s3.csv` | | the board is 16 MB; the old 8 MB/1500 K layout was sized for the wrong module |
+| `CONFIG_ESP_CONSOLE_SECONDARY_NONE` | `y` | |
+| `CONFIG_HID_REPORT_INTERVAL` | `15` | quantised to 10 ms at 100 Hz (§7.5) |
+
+**PSRAM stays off** until something allocates from it, verified against the board (§7.4).
+
+## 10.2 Flash the board
+
+**Flashing is manual, and it requires the container stopped.** One wire carries flash, log and
+control (ADR-0001), so `idf.py flash` and the container cannot both hold the port — and a
+holder that asserts DTR holds the board in reset. OTA is out of scope; the `ota_1` slot exists
+in the layout and nothing uses it.
+
+```sh
+# stop the container first
+docker compose down
+idf.py -p /dev/ttyACM0 flash
+# or, for a fresh board with no toolchain:
+esptool.py -p /dev/ttyACM0 write_flash 0x0 release/ns-controller-esp32s3n16.bin
+```
+
+Then start the container again. Nothing needs to be re-paired after a flash, because the bond
+lives in NVS on the board — but see the stale-bond trap in §10.6.
+
+## 10.3 Bring-up traps, all measured
+
+| Trap | What it looks like | Fix |
+| --- | --- | --- |
+| **DTR/RTS asserted** | zero bytes from the port, forever; `SerialException: device reports readiness to read but returned no data` | open with `dsrdtr=False, rtscts=False`, `setDTR(False)`/`setRTS(False)`, and again in `finally` (§8.3) |
+| **Extended advertising** | the board advertises, a phone connects, nRF Connect shows byte-correct Nintendo manufacturer data — and the console's grip-order screen **never lists it** | legacy advertising; `# CONFIG_BT_NIMBLE_EXT_ADV is not set` (already set for S3) |
+| **Stale NVS bond** | after pairing to one console, a **different** console cannot see the board: it wake-advertises (`g_adv_opcode = 0x81`) to the console it remembers | erase NVS (`idf.py -p <port> erase-flash`) and re-pair |
+| **Wrong port** | `/dev/ttyUSB0` is present and `idf.py monitor` shows nothing useful | the S3's control plane is the **CH9102 bridge** (`1a86:55d3` → `/dev/ttyACM0`); `/dev/ttyUSB0` on the bench host was an unrelated ESP32-D0WDQ6 |
+| **The old firmware's identity** | the port enumerates as `057e:2009 Nintendo Pro Controller` | that is the previous **unrelated** firmware; `Hello`'s `fw_version` is what answers "which firmware is this", not VID/PID |
+
+## 10.4 Run the container
+
+Compose is the documented default, because the product *is* its mounts and a run line with
+four flags is a copy-paste hazard every time. The `docker run` equivalent ships beside it —
+one person will always want it.
+
+```yaml
+services:
+  controller:
+    image: ghcr.io/<owner>/ns2-controller:latest
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0
+    volumes:
+      - "$HOME/clone/switch-controller-macro/宏:/library/macros:ro"
+      - "$HOME/clone/Amiibo:/library/amiibo:ro"
+      - "$HOME/clone/Amiibo/!Essential Files/key_retail.bin:/keys/key_retail.bin:ro"
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+```
+
+```sh
+docker run --rm -it \
+  --device=/dev/serial/by-id/usb-1a86_USB_Single_Serial_*-if00:/dev/ttyACM0 \
+  -v "$HOME/clone/switch-controller-macro/宏":/library/macros:ro \
+  -v "$HOME/clone/Amiibo":/library/amiibo:ro \
+  -v "$HOME/clone/Amiibo/!Essential Files/key_retail.bin":/keys/key_retail.bin:ro \
+  -p 8080:8080 ghcr.io/<owner>/ns2-controller:latest
+```
+
+The UI is then at `http://localhost:8080`.
+
+| Mount | Read-only | Holds |
+| --- | --- | --- |
+| `/library/macros` | yes | the macro library (`*.json`) |
+| `/library/amiibo` | yes | the figure library (`.bin` canonical) |
+| `/keys/key_retail.bin` | yes | the user's own retail key — one fixed path, no environment variable (ADR-0012) |
+| `--device` | — | the CH9102 port; never `--privileged` |
+
+**Host access is the host's problem, and it must be solved before the container runs.** Docker
+hands the container the host node with the host's ownership, so the user must already be able
+to read it — `dialout` on Debian/Arch, `uucp` or `plugdev` elsewhere — or the container needs
+`--group-add`. Diagnose with `id -nG` and `ls -l /dev/ttyACM0`.
+
+**No udev rule is required.** The CH9102 is a stock CDC/ACM device, so udev already creates
+`/dev/serial/by-id/…`; a rule is only wanted for a fixed friendly name.
+
+## 10.5 Operational rules
+
+These are not optional and each one reads as a bug in six weeks:
+
+| Rule | Why |
+| --- | --- |
+| **DTR/RTS deasserted on open, and in `finally`** | the CH9102 wires DTR→GPIO0 / RTS→EN; asserted, the board sits in reset and presents as "no device" |
+| **Flashing requires the container stopped** | one wire carries flash, log and control |
+| **One process per port** | a second holder is a deployment error, surfaced as `Port busy`, never retried through |
+| **The port is configuration; the default is `/dev/ttyACM0`** | so a replugged board can be pinned by `/dev/serial/by-id` |
+| **Baud 921600, fallback 115200** | *a recommendation, not a bench fact* — G-1 |
+| **The container never writes the key anywhere** | ADR-0012 |
+| **No WiFi, no host networking, no privileged mode, no named volumes** | ADR-0002 |
+| **Log at `INFO` or lower for any timing work** | on a DEBUG build the report rate is set by the UART log budget, not by `CONFIG_HID_REPORT_INTERVAL` (§7.5) |
+
+## 10.6 First run, in order
+
+1. `idf.py -p /dev/ttyACM0 erase-flash` if the board has ever been paired to a *different*
+   console, then flash and pair fresh from the console's controller menu.
+2. Start the container and confirm the Connection screen reads the port, the bond, and a
+   `fw_version` — not VID/PID.
+3. Mount the macro library and press `Rescan`; the four real macros should list with their
+   measured plan sizes (§5.7).
+4. Mount the key; the Settings screen must read `KEY_OK`, or `KEY_UNVERIFIED` if no library is
+   mounted (§6.7).
+5. Start a macro with the console connected and confirm the console acts on it. The board has
+   **no physical buttons**, so with nothing driving it a neutral controller is correct
+   behaviour, not a fault.
+6. Watch for a `boot_id` change over a sleep/wake cycle. It is expected (§9.2), and the
+   recovery path is what must be checked, not the reboot.

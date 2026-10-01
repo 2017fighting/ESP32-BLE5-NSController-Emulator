@@ -5,6 +5,12 @@ English / [中文](README.md)
 
 This project is an open-source implementation that emulates a **Nintendo Switch Pro2 controller** on **ESP32 series devices** and connects to **Nintendo Switch2 (NS2)**. By analyzing public BLE communication data between an official controller and NS2 console, this project implements a compatible protocol stack that allows ESP32 to emulate controller behavior.All protocol implementations are based on independently observed and documented BLE traffic from legally obtained consumer hardware. No proprietary SDK, leaked documents, or encrypted keys were used.
 
+> **Design lock in progress.** The macro-replay / amiibo-farming effort that builds on this
+> base has a **locked design** under [`docs/spec/`](docs/spec/00-index.md) — spec chapters,
+> [`docs/adr/`](docs/adr/), the [`CONTEXT.md`](CONTEXT.md) glossary, and a known-gap register
+> in [`docs/spec/12-handoff.md`](docs/spec/12-handoff.md). None of it is implemented yet; the
+> code in `main/` is the *base*, and the spec says what changes. Start with the index.
+
 The project adopts a **modular design**, supporting custom Transport Layer and Protocol Layer, making it easy to connect different host devices (such as PC, mobile phones, game consoles, etc.) to control the ESP32 microcontroller. The Transport Layer handles byte stream transmission and reception, while the Protocol Layer parses and encapsulates application-layer data. Decoupling these two layers allows the project to flexibly adapt to various input sources and communication methods.
 
 ## Features

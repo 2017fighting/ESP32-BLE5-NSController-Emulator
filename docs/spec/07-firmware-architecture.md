@@ -1,0 +1,221 @@
+# 7 · Firmware architecture
+
+The firmware is the upstream `master` tree plus targeted additions (ADR-0005). This chapter
+says what exists today, what the design adds, where the seams go, and the memory budget.
+
+## 7.1 What exists today
+
+Verified against the tree, not assumed:
+
+| Area | File | State |
+| --- | --- | --- |
+| Transport seam | `main/include/transport/transport.h`, `main/src/transport/transport.c` | vtable (`open`/`close`/`activate_rx`/`submit_tx`/`flush_tx`/`is_ready`) with three backends: UART, USB-Serial-JTAG, USB-CDC. RX ring **256 B** (`transport.c:37`), TX ring 256 B |
+| UART backend | `main/src/transport/transport_uart.c` | `UART_NUM_1`, GPIO4/5 (`transport.c:100-105`, `main/Kconfig.projbuild`), 115200, a 10 ms-poll RX task |
+| USB-CDC backend | `main/src/transport/transport_usb_cdc.c` | no TX ring and no TX task; `zc_reset(tp->rx_buffer)` on re-attach (`:118-119`) |
+| Protocol seam | `main/src/protocol/protocol_router.c`, `easycon/*` | two layers: `SIMPLE`, `EASYCON` |
+| HID | `main/src/controller/hid_controller.c`, `hid_controller_pro2.c` | Pro2 report, front/back buffer, `controller_hid_commit` (`:233`), `pro2_report_init` (`:61`) — already the neutral template §4.6 needs |
+| Console protocol | `main/src/ns2_codec.c` | command handlers; `cmd_0x01_handler` (`:204-214`) handles **only** subcommand `0x0C` |
+| BLE | `main/src/gap.c`, `main/src/gatt.c` | NimBLE peripheral; GATT service with `0x000e` HID notify, `0x0014`/`0x0016` command write, `0x001a` notify |
+| Flows | `sdkconfig:1761` `CONFIG_FREERTOS_HZ=100`; `main/Kconfig.projbuild` `HID_REPORT_INTERVAL` default 15, range 5–100 | |
+
+The base is real on this hardware: it pairs with a real NS2, completes the console's
+out-of-band handshake, and HID input reaches the console (verified by toggling a button on
+the console's button-check page — `s3-bringup.md` §11.3).
+
+## 7.2 The seam the control plane goes at
+
+The control plane is **a third protocol layer on the transport vtable**, not a new transport
+and not a rewrite of the router. That keeps the existing EasyCon path intact for anyone using
+it, and it means the framing has exactly one implementation site on the device.
+
+```text
+        ┌── transport (vtable: open / activate_rx / submit_tx / flush_tx) ──┐
+        │  uart(now UART0)        usb_cdc            usb_serial_jtag        │
+        └───────────────────────────────┬───────────────────────────────────┘
+                                        │  byte stream (plus ESP_LOG noise)
+                        ┌───────────────┴────────────────┐
+                        │  protocol_router               │
+                        │   ├── SIMPLE                    │
+                        │   ├── EASYCON                   │
+                        │   └── CONTROL  ← new            │
+                        └───────────────┬────────────────┘
+                                        │
+                    ┌───────────────────┼────────────────────┐
+                    │                   │                    │
+              control verbs      plan executor        nfc tag server
+              (chapter 2)        (chapter 5)          (chapter 6)
+```
+
+The transport's byte stream carries both framed protocol traffic and `ESP_LOG` text;
+separating them is the CONTROL layer's job (§7.3), not the transport's. That is the seam
+discipline ADR-0006 implies: the framing knows about the noise, the transport does not.
+
+## 7.3 The firmware changes, in dependency order
+
+1. **A UART0 transport instance.** `transport_uart` is hardcoded to `UART_NUM_1` on GPIO4/5.
+   The control plane needs `UART0` — the CH9102 bridge — where `ESP_LOG` already lives
+   (`sdkconfig:1585`). Parameterise the port (or add a second instance) and **keep the RX
+   ring at 256 B or raise it deliberately**; the 100 Hz tick means a burst larger than the
+   ring is data loss, not backpressure (§7.5).
+2. **A shared TX lock, and logging through it.** `ESP_LOG` and control replies must not
+   interleave (§2.2). Route log output through a hook that takes the same lock as reply
+   transmission, and **suppress device logging to a bounded rate while a bulk transfer is
+   active**. This is the single most subtle firmware requirement in the design, and getting it
+   wrong costs retransmits rather than correctness.
+3. **The CONTROL protocol layer**: COBS decode/encode, CRC-16 check, frame dispatch, the ten
+   verbs, and the canonical `ERROR` table. It parses `HELLO` tolerantly and everything else
+   strictly (§2.8).
+4. **The state model**: the five axes of chapter 4, the transition table, the panic-stop
+   reader (a 100 Hz `gpio_get_level(GPIO0)` poll with ≤ 30 ms debounce and edge-triggered
+   stop), and the `STATUS`/`EVENT` surface of chapter 3.
+5. **The plan executor**: a task that walks plan frames against the tick clock, holds each
+   for its `hold_ms`, calls `controller_hid_commit`, and on every exit path emits the neutral
+   template (§4.6). It owns the loop-boundary neutral and the `LOOP_COMPLETED` rate limit
+   (§3.3).
+6. **The NFC state machine and tag server**: drive HID report `0x09` byte `0x0C` (§4.9) and
+   answer `0x01/0x03`, `0x01/0x04`, `0x01/0x05`, `0x01/0x06`, `0x01/0x14`, `0x01/0x15`. The
+   device is a byte server here: it slices a 540-byte RAM buffer and does no crypto
+   (ADR-0011). Rename the report field `unknown_0x0c` → `nfc_state`.
+7. **`CONFIG`**: `report_interval_ms` and `led`, volatile, applied at the boundary §2.9 fixes.
+8. **The `0x01/0x0C` response asymmetry, investigated rather than inherited.**
+   `main/src/ns2_codec.c` rewrites response byte 1 from `0x91` to `0x01` for this subcommand,
+   while `0x02/0x04` (the flash read the console uses for calibration) also sets `0x91` and is
+   **not** rewritten. Whether that asymmetry is deliberate is unknown, and it touches both the
+   NFC probe and calibration. It is listed here so the NFC work in step 6 does not touch the
+   byte without deciding, and it is **G-14** in §12.3.
+
+Nothing in this list needs a new transport, a new radio, or a filesystem.
+
+## 7.4 The plan buffer, the tag buffer and the memory budget
+
+| Consumer | Size | Lifetime |
+| --- | --- | --- |
+| Plan staging buffer | exactly the announced `LOAD_PLAN` length, up to `CONFIG_PLAN_CAPACITY_BYTES = 65536` | allocated on announce, freed on discard, replacement, or commit-then-replace |
+| Plan replay structure | the committed buffer itself (no copy) | until discarded or superseded |
+| Tag buffer | 540 B | until unplaced-and-discarded or replaced |
+| HID report front/back buffers | 63 B each | process lifetime |
+| Control-layer frame buffers | `max_frame` for RX + TX | process lifetime |
+| NFC chunk buffer | one `0x15` response, ~75 B | process lifetime |
+
+**`plan_slots = 1`, so the worst single allocation is 64 KiB**, and it fits internal SRAM
+without PSRAM. Two measured facts bound the risk:
+
+- **The committed base firmware is 553,504 B in a 3 MB `ota_0` slot — 82% free**
+  (`s3-bringup.md` §11.1). The code budget is not tight, so the plan and tag buffers are the
+  only allocations worth counting.
+- **The largest real plan is 3,356 B** (§5.7), so the common case is three kilobytes, not
+  64 KiB. `plan_capacity_bytes` is the ceiling, not the expectation.
+
+**PSRAM is present on this board and deliberately not enabled.** Nothing yet allocates from
+it, and an earlier revision that turned it on was reverted as unprompted scope creep with
+boot-loop risk. **It goes on together with the first real PSRAM user, verified against the
+board** — and the plan buffer is not that user, because 64 KiB is not worth a boot risk.
+*(If a future user needs the full 64 KiB under pressure from the tag buffer and the framebuffers,
+that is the moment PSRAM gets enabled and measured, not before.)*
+
+## 7.5 Timing: the tick grid, and why the report interval is not a millisecond knob
+
+`CONFIG_FREERTOS_HZ=100` (`sdkconfig:1761`) makes `vTaskDelayUntil` quantise to 10 ms ticks,
+so `CONFIG_HID_REPORT_INTERVAL` is not a millisecond control
+(`ns2-console-lifecycle.md` §4.3):
+
+| Setting | Ticks at 100 Hz | Effective delay |
+| --- | --- | --- |
+| 5 ms | 0 | **0 ms — the task spins** |
+| 10 ms | 1 | 10 ms |
+| 15 ms | 1 | **10 ms** |
+| 20 ms | 2 | 20 ms |
+| 25 ms | 2 | 20 ms |
+
+Consequences the design takes as given: a **5 ms report period is unreachable without raising
+`CONFIG_FREERTOS_HZ`**, a 5 ms setting is worse than useless, and the plan format's
+millisecond holds (ADR-0009) are what keep playback speed independent of all of this.
+
+**And on a DEBUG build the report rate is set by the UART log budget, not by any of it.**
+152 B of log per report against 11,520 B/s caps the rate at 75.8/s; 74.4/s was observed — 98%
+of that ceiling. **Any latency measurement from a DEBUG-logged run is a logging floor**, so
+timing work runs with `CONFIG_LOG_MAXIMUM_LEVEL=INFO` and the per-notification logs off.
+
+## 7.6 Two defects in the base firmware the design has to live with
+
+Both are real, measured, present at `HEAD`, and neither is fixed by this design.
+
+**1 · The advertise-restart callback overflows the timer task stack.** `gap.c:78-83` creates a
+one-shot 3 s `xTimerCreate` on disconnect; the callback calls `ble_advertise()`, which
+composes `ESP_LOGI` format strings and a 30-byte buffer on a task whose stack is
+`CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH = 2048` **bytes** (`sdkconfig:1778`; not set in any
+committed defaults file, so it is the IDF default). It fired 19 times in one session and
+aborted with `rst:0xc` **8 times** (`ns2-console-lifecycle.md` §5.3).
+
+**The tempting fix is the wrong one.** Raising `CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH` is one
+line, and it is wrong twice over: the timer-service task's stack is shared by *every* FreeRTOS
+timer callback in the firmware, so the constant has to cover the heaviest callback anyone ever
+adds, in code that has nothing to do with advertising; and the actual defect is that
+`ble_advertise()` — which composes log format strings — has no business running on a callback
+task at all. **The fix is to move that work off the timer task** (a queued call to the
+application task, or a dedicated small task), which is local to the file that owns it. The
+stack depth should be left at its default unless something else proves it needs raising.
+
+This is not a curiosity: it makes **a device reboot an ordinary event**, which is why the
+container's recovery story keys on `boot_id` (§2.8) and why nothing about a reboot may be
+treated as exceptional. It is not this design's to fix and it belongs to whoever owns
+`gap.c`.
+
+**2 · `ble_gap_update_params` fails on every connection, harmlessly.** `gap.c:54-58` sets
+`itvl_min = 6` with `itvl_max = desc.conn_itvl`, an inverted range, and the call returns
+`BLE_HS_EINVAL` every time — it never reaches any floor check
+(`ns2-console-lifecycle.md` §4.2). The link still runs at `conn_itvl = 4` (**5 ms**) because
+that value is the console's *inbound* request, which passes no validation on this path.
+
+The design does not depend on the sub-spec work at all, but the reason is worth recording so
+nobody "fixes" the call into something load-bearing: **the peripheral receives the interval
+inbound; the host-side gate would only matter if the device initiated** (`host-stack-subspec-intervals.md`).
+The build requirement stands regardless — **ESP-IDF `v5.5.5`** (the released floor; v5.5.4
+does not contain the symbol and the failure is *silent*, `s3-bringup.md` §11) with
+`CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE=y`, and **`patch_nimble_lib.py` must not be run
+for S3** — it is C6/C61-only.
+
+## 7.7 The BLE host stack, and the console-side air-time budget
+
+**The host stack stays NimBLE.** An early research claim that Bluedroid is required for
+sub-spec connection intervals does not appear in any Espressif source; it was a researcher's
+inference presented as a quotation, and it is wrong. The Kconfig `select` *is* satisfied by
+`BT_NIMBLE_ENABLED`, but the symbol it selects is consumed **only by Bluedroid** — it would
+have been a no-op for NimBLE. NimBLE needs no relaxation because a **peripheral receives the
+interval inbound**: the console as central sends the connection update and
+`ble_gap_rx_update_complete` stores it unchecked. The one gate is host-initiated
+`ble_gap_update_params()`, and this repo already sits at or above the spec minimum there
+(§7.6). **No migration to Bluedroid, and no `patch_nimble_lib.py` on S3.**
+
+**The console-side budget, which the tag path depends on.** Espressif's caution about large
+payloads at sub-spec intervals applies to full-length 251-octet DLE frames, not to this
+traffic:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Data Length Extension | **enabled** | disabling it caps LL PDUs at 27 bytes and fragments each 75-byte `0x15` response across three connection events, tripling latency |
+| ATT MTU | **≥ 80**; 128–256 a safe target | a `0x15` response is 8 + 3 + 64 = **75 bytes**; below an MTU of 80 it is segmented |
+| Chunk size | 64 bytes | the console's read granularity |
+| The whole tag read | **9 round trips ≈ 90 ms** | ~15% of a 5 ms window per exchange; comfortably inside the interactive window and against ~1.5 ms of host-side re-sealing (§6.4) |
+
+So the 540-byte tag path and the 5 ms link are compatible, and the constraint is real but not
+binding at these sizes. **This is a firmware configuration requirement, not an optimisation:**
+an MTU that segments the response silently costs a third of the throughput and nothing reports
+it.
+
+## 7.8 The storage partition, unowned
+
+`partitions_16mb_s3.csv` reserves **~10 MB** of `spiffs` named `storage`, and nobody owns it.
+The design cannot quietly drop it or quietly keep it:
+
+- It must **not** hold the macro library, the amiibo library (ADR-0004 — those live in the
+  container), or `key_retail.bin` (ADR-0012 — the key never reaches the board).
+- Dual OTA slots exist in the layout and **OTA is out of scope** (ADR-0001), so nothing uses
+  `ota_1` either.
+
+**Decision: keep the partition table as measured, and record the reservation as unclaimed.**
+It stays because the layout is verified, flashing with it works, and shrinking it buys nothing
+today; it is *unclaimed* rather than *reserved for a feature* because no feature has claimed
+it. If the implementation effort needs neither OTA nor storage, **dropping both is the
+honest move** — this is the one place the spec leaves a table row deliberately unused, and
+§12.3 carries it as G-3 rather than as a promise.
