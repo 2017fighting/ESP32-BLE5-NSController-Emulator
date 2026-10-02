@@ -72,10 +72,9 @@ cannot rotate an identity it cannot see is placed — so `tag_state`, `tag_ident
 An `EVENT` frame carries one `kind` byte and an optional small payload. The set is closed
 and short.
 
-**The event frame.** An `EVENT` is a frame of type 3 whose `verb` is **0** — reserved, not one
-of the ten (§2.4) — and whose payload begins with one `kind` byte. The kinds are numbered
-**1–10 in the order of the table below**, and the event's own payload follows the `kind`
-byte:
+**The event frame.** An `EVENT` is the event frame type of §2.2, so its `verb` is 0 (§2.4) and
+its payload begins with one `kind` byte. The kinds are numbered **1–10 in the order of the
+table below**, and the event's own payload follows the `kind` byte:
 
 | Kind | # | Fires when | Payload after `kind` |
 | --- | --- | --- | --- |

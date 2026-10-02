@@ -31,10 +31,10 @@ high rate. The `115200` seen in bring-up was that session's *log* baud, not a li
 | `type` | u8 | `REQUEST` (1) / `REPLY` (2) / `EVENT` (3) |
 | `verb` | u8 | one of the ten verbs (§2.4); **0 on an `EVENT`** (§3.3) |
 | `len` | u16, little-endian | payload length in bytes, header excluded |
-| `crc` | u16, little-endian | CRC-16/CCITT-FALSE over header bytes 0–3 and the payload |
+| `crc` | u16, little-endian | CRC-16/CCITT-FALSE over header bytes 0–4 and the payload |
 | payload | `len` bytes | verb-specific |
 
-**The header's exact offsets.** The six header bytes are fixed, and the offsets are part of
+**The header's exact offsets.** The seven header bytes are fixed, and the offsets are part of
 the protocol:
 
 | Offset | Width | Field |
@@ -44,7 +44,7 @@ the protocol:
 | 2 | u8 | `verb` |
 | 3 | u16, little-endian | `len` |
 | 5 | u16, little-endian | `crc` |
-| 6 | `len` bytes | payload |
+| 7 | `len` bytes | payload |
 
 *The CRC's exact polynomial and initial value are **a decision of record, not a discovery**:
 any CRC-16 both sides agree on would do. CCITT-FALSE is chosen because the device can compute
@@ -52,14 +52,19 @@ it with `esp_rom_crc16_be` (`esp_rom_crc.h`: poly `0x1021`, init `0xffff`, refin
 false, xorout `0`), so the container does not guess and the firmware does not carry its own
 table.*
 
-**What the CRC covers, exactly.** It is CRC-16/CCITT-FALSE over **the first four header bytes
-followed by the payload** — `4 + len` bytes. The `crc` field itself is excluded (a field
-cannot cover itself), and so are the COBS encoding and the delimiters (the CRC is a property
-of the frame, not of its wire encoding). The device computes
-`~esp_rom_crc16_be((uint16_t)~0xffff, buf, 4 + len)` and the container computes
-`binascii.crc_hqx(buf, 0xFFFF)`; both are CCITT-FALSE, and both store the result in the
-little-endian `crc` field. That is the whole contract: no table on either side, and no other
-polynomial.
+**What the CRC covers, exactly.** It is CRC-16/CCITT-FALSE over **header bytes 0–4 and then
+the payload** — `5 + len` bytes, in that order. The `crc` field's own two bytes are skipped (a
+field cannot cover itself, and they are not always zero), and so are the COBS encoding and the
+delimiters (the CRC is a property of the frame, not of its wire encoding). The input is
+therefore **two segments**, which is what the ROM API's non-continuous form exists for:
+
+- device: `uint16_t c = esp_rom_crc16_be((uint16_t)~0xffff, hdr, 5);` then
+  `c = esp_rom_crc16_be(c, payload, len); crc = ~c;`
+- container: `c = binascii.crc_hqx(hdr[:5], 0xFFFF); c = binascii.crc_hqx(payload, c)`
+
+Both produce CCITT-FALSE (poly `0x1021`, init `0xffff`, refin/refout false, xorout `0`) over
+`ver ‖ type ‖ verb ‖ len ‖ payload`, and both store the result in the little-endian `crc`
+field. That is the whole contract: no table on either side, and no other polynomial.
 
 **The wire form of a frame.** A frame on the wire is
 
@@ -80,9 +85,9 @@ up to 254 non-zero bytes cost one overhead byte. The encoder never appends or pr
 delimiter; the framer adds both, outside the encoding. The header is fixed-width and the
 payload is the only variable part.
 
-**The CRC covers the header's first four bytes and the payload.** That is the only reading
-under which resynchronisation works as designed: a receiver scans forward for `0x00`, decodes,
-checks the CRC, and on failure advances to the **next** `0x00` and tries again.
+**Resynchronisation depends on that coverage.** A receiver scans forward for `0x00`, decodes,
+checks the CRC, and on failure advances to the **next** `0x00` and tries again; a `len` the
+CRC did not cover would be a corrupted length nothing could catch.
 
 **Log lines are noise, by construction.** `ESP_LOG` text never contains a `0x00`, so a log
 line arrives as a chunk that fails the CRC and is discarded. **Resynchronisation never
@@ -95,10 +100,10 @@ active** (chapter 7). This is the price of multiplexing, and it is a firmware re
 not an optimisation.
 
 `max_frame` bounds what either side may send: the **decoded** frame, header plus payload
-(`6 + len`), and its value is **512**. It is advertised in `HELLO` (§2.6) and the device never
-exceeds it. The largest frame either side sends is a `LOAD_PLAN` chunk — `6 + 5 + 256 = 267`
+(`7 + len`), and its value is **512**. It is advertised in `HELLO` (§2.6) and the device never
+exceeds it. The largest frame either side sends is a `LOAD_PLAN` chunk — `7 + 5 + 256 = 268`
 bytes — so 512 leaves room without budgeting a larger buffer than §7.4 counts. A frame whose
-`6 + len` exceeds `max_frame` is `ERROR BAD_LENGTH` (§2.5): the header was readable, so it is
+`7 + len` exceeds `max_frame` is `ERROR BAD_LENGTH` (§2.5): the header was readable, so it is
 an understood frame and not noise. A receiver caps its decode buffer at `max_frame` and
 resyncs if a block decodes past it (§2.8).
 
@@ -146,6 +151,15 @@ direction is device→container, and it is always a `REPLY` — there is no `ERR
 the container never sends verb 10. A verb outside 1–10 is `ERROR UNKNOWN_SUBCMD` (§2.5). The
 `verb` field of an `EVENT` frame is **0**, reserved (§3.3), so an event is never mistaken for
 a verb.
+
+### Verbs with no payload
+
+The requests for `START`, `STOP`, `STATUS`, `UNPLACE_AMIIBO` and `PAIR_UNPAIR` carry
+`len = 0`, and their replies are empty — except `STATUS`, whose reply is the fixed 47 bytes of
+§3.2. `PAIR_UNPAIR` **always means *forget the bond and go pairable***: it is not a toggle,
+and it has no payload to select a direction because there is no action a device that does not
+initiate pairing could take that differs from unpair (ADR-0013). When there is no bond it is
+an ACK and nothing changes, like the other reduce-activity verbs of §4.4.
 
 ### Deliberately absent
 
@@ -327,11 +341,10 @@ the RX ring is 256 bytes (§7.1, §7.5), so at `chunk_size = 256` one chunk fill
 device may ACK every chunk under load. That is a permitted outcome, not a protocol change,
 and the container must never depend on an ACK arriving only at a window boundary. The
 container keeps **at most one window of un-ACKed chunk bytes in flight** and sends no other
-verb for the life of the transfer; it does not need to know the ring size, only that one
-window is the slowest the ACK can come. The window is a constant of this section rather than
-a `HELLO` field — `chunk_size` is already advertised, so validation 2 (§12.2) is answered by
-changing this constant on both sides. Retry is at **window granularity**: resend from
-`next_expected_offset`.
+verb for the life of the transfer. The window is a constant of this section rather than a
+`HELLO` field — `chunk_size` is already advertised — and retry is at **window granularity**:
+resend from `next_expected_offset`. Why bulk is the exception, and the alternative it
+rejected, are **ADR-0015**.
 
 A **checked-in golden fixture** — a plan built from a real macro, with its exact frame bytes
 and hash — is what keeps the two implementations from drifting (chapter 12, G-8).
@@ -359,7 +372,7 @@ and hash — is what keeps the two implementations from drifting (chapter 12, G-
 - **An unknown frame type or verb gets a typed `ERROR` and the link stays up.** Container
   and device drift by definition, and resetting turns "one bad verb" into "the board is
   gone". A known verb with an unexpected length is `BAD_LENGTH`, and so is a frame whose
-  `6 + len` exceeds `max_frame`; same treatment.
+  `7 + len` exceeds `max_frame`; same treatment.
 - **A frame the receiver cannot trust produces no `ERROR` at all.** A CRC failure, a COBS
   block that does not decode, or a COBS block that decodes past `max_frame` is discarded
   silently and the receiver advances to the next `0x00` (§2.2) — it cannot name a code for
@@ -429,10 +442,10 @@ byte's meaning is owned elsewhere.
    consecutive delimiters) is skipped.
 2. **Decode COBS**, bounded by `max_frame`; a block that decodes past it is unreadable.
 3. **Read the header**: `ver`(u8), `type`(u8), `verb`(u8), `len`(le16), `crc`(le16) (§2.2).
-4. **Check the length and version**: the block must be exactly `6 + len` bytes, and
-   `6 + len ≤ max_frame` and `ver = 1`. A mismatch on `len` or `max_frame` is
+4. **Check the length and version**: the block must be exactly `7 + len` bytes, and
+   `7 + len ≤ max_frame` and `ver = 1`. A mismatch on `len` or `max_frame` is
    `ERROR BAD_LENGTH`; a bad `ver` is `ERROR VER_MISMATCH`.
-5. **Check the CRC** over bytes 0–3 ‖ payload. On failure, discard silently and resync (§2.2,
+5. **Check the CRC** over bytes 0–4 ‖ payload. On failure, discard silently and resync (§2.2,
    §2.8).
 6. **Dispatch on `type`**: 1 `REQUEST`, 2 `REPLY`, 3 `EVENT`; anything else is
    `ERROR UNKNOWN_TYPE`.

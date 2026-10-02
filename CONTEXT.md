@@ -147,12 +147,12 @@ Whether a frame asks, answers, or announces: a request carries a verb, a reply a
 _Avoid_: direction, kind, category
 
 **Kind**:
-The identity of an `EVENT`: which edge fired. One byte in the event's payload, on a different axis from the frame type.
+The identity of an `EVENT`: which edge fired, on a different axis from the frame type.
 _Avoid_: event type, subtype
 
 **Bulk window**:
-The bytes a container may send in a bulk transfer before it must wait for an ACK. One window may be unacknowledged at a time, and an ACK names the next expected offset.
-_Avoid_: credit, buffer, chunk (a chunk is one frame; a window is several frames)
+The bytes a container may send in a bulk transfer before it must wait for an ACK.
+_Avoid_: credit, batch, send buffer
 
 **Panic stop**:
 The one halt of the active mode that does not come from the container: a press at the board itself.

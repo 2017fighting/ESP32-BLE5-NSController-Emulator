@@ -42,8 +42,9 @@ there is a single field with a single value.
 
 Only the `mode` axis has transitions. "Always legal" verbs change no mode.
 
-**Reading the Reply column.** A `REPLY` carries no payload unless the verb is `HELLO` or
-`STATUS` (§2.6, §3.2). Where the table says `ACK, last_stop_reason=CONTAINER_STOP` it is
+**Reading the Reply column.** A `REPLY` carries no payload unless the verb is `HELLO`,
+`STATUS`, `ERROR` or a bulk ACK (§2.5–§2.7, §3.2). Where the table says
+`ACK, last_stop_reason=CONTAINER_STOP` it is
 describing **observable state**, not an ACK payload: the ACK is empty, and the caller reads the
 reason off the next `STATUS` poll (at worst 500 ms later). The column is written that way
 because what matters at a transition is that the reason *changed*, not how it is delivered.
