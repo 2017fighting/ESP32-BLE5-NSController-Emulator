@@ -92,3 +92,7 @@ Desktop.ini
 *.workspace # General workspace files, can be from various tools
 *.suo       # Visual Studio Solution User Options
 *.sln.docstates # Visual Studio
+
+# This repo tracks files under scripts/. A global [Ss]cripts exclude
+# (~/.config/git/ignore) would otherwise hide new ones from git status.
+!scripts/

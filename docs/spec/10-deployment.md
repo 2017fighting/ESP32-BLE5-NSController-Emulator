@@ -62,6 +62,9 @@ docker compose down
 idf.py -p /dev/ttyACM0 flash
 # or, for a fresh board with no toolchain:
 esptool.py -p /dev/ttyACM0 write_flash 0x0 release/ns-controller-esp32s3n16.bin
+
+# on the macOS bench host the port is the forwarded node, not /dev/ttyACM0:
+idf.py -p /dev/cu.usbmodem5C930639851 flash
 ```
 
 Then start the container again. Nothing needs to be re-paired after a flash, because the bond
@@ -75,6 +78,7 @@ lives in NVS on the board — but see the stale-bond trap in §10.6.
 | **Extended advertising** | the board advertises, a phone connects, nRF Connect shows byte-correct Nintendo manufacturer data — and the console's grip-order screen **never lists it** | legacy advertising; `# CONFIG_BT_NIMBLE_EXT_ADV is not set` (already set for S3) |
 | **Stale NVS bond** | after pairing to one console, a **different** console cannot see the board: it wake-advertises (`g_adv_opcode = 0x81`) to the console it remembers | erase NVS (`idf.py -p <port> erase-flash`) and re-pair |
 | **Wrong port** | `/dev/ttyUSB0` is present and `idf.py monitor` shows nothing useful | the S3's control plane is the **CH9102 bridge** (`1a86:55d3` → `/dev/ttyACM0`); `/dev/ttyUSB0` on the bench host was an unrelated ESP32-D0WDQ6 |
+| **Wrong port, macOS** | a `usbmodem*` node is opened and yields nothing, or the container is handed the wrong one | macOS has neither `/dev/ttyACM*` nor `/dev/ttyUSB0`, and this host carries **two** `usbmodem` nodes — the board and an unrelated AV adapter. Resolve by USB Serial Number, never by glob (§10.7) |
 | **The old firmware's identity** | the port enumerates as `057e:2009 Nintendo Pro Controller` | that is the previous **unrelated** firmware; `Hello`'s `fw_version` is what answers "which firmware is this", not VID/PID |
 
 ## 10.4 Run the container
@@ -82,6 +86,23 @@ lives in NVS on the board — but see the stale-bond trap in §10.6.
 Compose is the documented default, because the product *is* its mounts and a run line with
 four flags is a copy-paste hazard every time. The `docker run` equivalent ships beside it —
 one person will always want it.
+
+**Two files are committed, not one.** `container/compose.yaml` is the Linux canonical form
+shown below. `container/compose.macos.yaml` is an override that changes **only** the `devices:`
+mapping, so the platform difference is versioned rather than buried in prose. It takes the host
+node from `$NS2_PORT` rather than naming it, because the macOS node is host-specific and must
+be resolved, not guessed (§10.7):
+
+```sh
+# Linux
+docker compose -f container/compose.yaml up
+
+# macOS
+export NS2_PORT="$(python3 scripts/find_serial_port.py)"
+docker compose -f container/compose.yaml -f container/compose.macos.yaml up
+```
+
+Either way the container sees `/dev/ttyACM0`.
 
 ```yaml
 services:
@@ -107,6 +128,19 @@ docker run --rm -it \
   -p 8080:8080 ghcr.io/<owner>/ns2-controller:latest
 ```
 
+On the macOS bench host the `--device` argument takes the resolved node instead, and the
+container still sees `/dev/ttyACM0` (§10.7):
+
+```sh
+# NS2_PORT is the resolved macOS node, exported above
+docker run --rm -it \
+  --device="$NS2_PORT:/dev/ttyACM0" \
+  -v "$HOME/clone/switch-controller-macro/宏":/library/macros:ro \
+  -v "$HOME/clone/Amiibo":/library/amiibo:ro \
+  -v "$HOME/clone/Amiibo/!Essential Files/key_retail.bin":/keys/key_retail.bin:ro \
+  -p 8080:8080 ghcr.io/<owner>/ns2-controller:latest
+```
+
 The UI is then at `http://localhost:8080`.
 
 | Mount | Read-only | Holds |
@@ -121,8 +155,14 @@ hands the container the host node with the host's ownership, so the user must al
 to read it — `dialout` on Debian/Arch, `uucp` or `plugdev` elsewhere — or the container needs
 `--group-add`. Diagnose with `id -nG` and `ls -l /dev/ttyACM0`.
 
+On macOS the container's copy of the node arrives as `root:dialout` mode `0660`, so a
+container that runs as a non-root user needs membership of `dialout` — the host's own
+ownership does not carry over, and the macOS user is in no serial group at all.
+
 **No udev rule is required.** The CH9102 is a stock CDC/ACM device, so udev already creates
-`/dev/serial/by-id/…`; a rule is only wanted for a fixed friendly name.
+`/dev/serial/by-id/…`; a rule is only wanted for a fixed friendly name. **macOS has no
+`/dev/serial/by-id`** and no udev to make one; the board is pinned by USB Serial Number
+instead (§10.7).
 
 ## 10.5 Operational rules
 
@@ -133,7 +173,8 @@ These are not optional and each one reads as a bug in six weeks:
 | **DTR/RTS deasserted on open, and in `finally`** | the CH9102 wires DTR→GPIO0 / RTS→EN; asserted, the board sits in reset and presents as "no device" |
 | **Flashing requires the container stopped** | one wire carries flash, log and control |
 | **One process per port** | a second holder is a deployment error, surfaced as `Port busy`, never retried through |
-| **The port is configuration; the default is `/dev/ttyACM0`** | so a replugged board can be pinned by `/dev/serial/by-id` |
+| **The port is configuration; the default is `/dev/ttyACM0`** | so a replugged board can be pinned by `/dev/serial/by-id` on Linux. There is no `/dev/serial/by-id` on macOS: the node is the USB Serial Number and is resolved, not globbed, from `SER=5C93063985` (§10.7) |
+| **On macOS the node is forwarded, never attached** | `orb usb attach` detaches the board from macOS and breaks host-side flashing; plain `--device` forwards it and leaves both sides usable (§10.7) |
 | **Baud 921600, fallback 115200** | *a recommendation, not a bench fact* — G-1 |
 | **The container never writes the key anywhere** | ADR-0012 |
 | **No WiFi, no host networking, no privileged mode, no named volumes** | ADR-0002 |
@@ -141,8 +182,9 @@ These are not optional and each one reads as a bug in six weeks:
 
 ## 10.6 First run, in order
 
-1. `idf.py -p /dev/ttyACM0 erase-flash` if the board has ever been paired to a *different*
-   console, then flash and pair fresh from the console's controller menu.
+1. `idf.py -p /dev/ttyACM0 erase-flash` (`-p "$NS2_PORT"` on the macOS bench host, §10.7) if
+   the board has ever been paired to a *different* console, then flash and pair fresh from the
+   console's controller menu.
 2. Start the container and confirm the Connection screen reads the port, the bond, and a
    `fw_version` — not VID/PID.
 3. Mount the macro library and press `Rescan`; the four real macros should list with their
@@ -154,3 +196,52 @@ These are not optional and each one reads as a bug in six weeks:
    behaviour, not a fault.
 6. Watch for a `boot_id` change over a sleep/wake cycle. It is expected (§9.2), and the
    recovery path is what must be checked, not the reboot.
+
+## 10.7 The macOS bench host
+
+The bench host is an arm64 Mac (macOS 27.2) running **OrbStack**, with no Docker Desktop and
+**no WCH `CH34x` driver**. This section is the only place the macOS divergence lives; where an
+earlier section needs it, it points here (ADR-0014).
+
+**The path is forwarding.** The macOS node is mapped onto the container's default port, and
+the board stays on macOS:
+
+```sh
+# resolves the node by USB Serial Number and fails on 0 or >1 matches, rather than globbing
+export NS2_PORT="$(python3 scripts/find_serial_port.py)"
+
+# the container sees /dev/ttyACM0 — the §10.5 default, unchanged, so no container code moves
+docker compose -f container/compose.yaml -f container/compose.macos.yaml up
+
+# flashing stays host-side, with the container stopped (§10.2)
+idf.py -p "$NS2_PORT" flash
+```
+
+Forwarding is **non-exclusive**: macOS keeps the node while the container holds it, which is
+precisely what lets flashing remain a host-side act. `orb usb attach` is the wrong tool for
+this path — it *detaches* the device from macOS and so breaks the flash step; it is never used.
+
+**The node name, and how to pin it.** macOS has no `/dev/ttyACM*`, no `/dev/ttyUSB*` and no
+`/dev/serial/by-id`. The node is the **USB Serial Number** plus the interface number:
+
+| Device | `USB Serial Number` | Node |
+| --- | --- | --- |
+| The board | `5C93063985` | `/dev/cu.usbmodem5C930639851` |
+| An unrelated AV adapter on the same host | `000000000000` | `/dev/cu.usbmodem0000001` |
+
+That is better than a topology-derived name — it survives moving the board to another port —
+but it makes a `usbmodem*` glob ambiguous on a host that has two, so the node is resolved by
+serial number, never guessed. `scripts/find_serial_port.py` is the resolver: it reads the USB
+Serial Number out of `ioreg`, matches it against the nodes that exist, and **fails loudly** on
+zero matches (exit 2) and on more than one (exit 3) rather than picking one.
+
+**No WCH driver is required.** Apple's `com.apple.iokit.IOSerialFamily` claims the bridge as
+`/dev/cu.usbmodem*`, and the whole flash path runs on it: stub upload, baud change to 460800,
+`flash-id`, and a 256 KiB incompressible write round-tripped against the unclaimed `storage`
+region. The WCH `CH34x` DriverKit package installs a system extension to buy nothing this
+effort needs. (`bench-transport-macos.md` §2 claims otherwise and is refuted in
+`macos-bench-path.md` §5–§7a; that record is left as written, per the `s3-bringup.md` §7
+precedent for closed research records.)
+
+**`921600` is untested on this host.** Every measurement is at `460800`; G-1 still owns the
+question.

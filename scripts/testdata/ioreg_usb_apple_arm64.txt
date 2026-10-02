@@ -1,0 +1,193 @@
+  +-o AppleT8103USBXHCI@01000000  <class AppleT8103USBXHCI, id 0x10000031a, registered, matched, active, busy 0 (8033 ms), retain 169>
+  | | {
+  | |   "IOClass" = "AppleT8103USBXHCI"
+  | |   "kUSBSleepPortCurrentLimit" = 3000
+  | |   "UsbHostControllerSoftRetryPolicy" = 0
+  | |   "IOPersonalityPublisher" = "com.apple.driver.usb.AppleSynopsysUSB40XHCI"
+  | |   "IOMatchedAtBoot" = Yes
+  | |   "IOPowerManagement" = {"ChildrenPowerState"=3,"DevicePowerState"=0,"CurrentPowerState"=3,"CapabilityFlags"=32768,"MaxPowerState"=3,"DriverPowerState"=0}
+  | |   "IOProviderClass" = "AppleARMIODevice"
+  | |   "IOProbeScore" = 10001
+  | |   "locationID" = 16777216
+  | |   "kUSBWakePortCurrentLimit" = 3000
+  | |   "IONameMatch" = "usb-drd,t8103"
+  | |   "CFBundleIdentifierKernel" = "com.apple.driver.usb.AppleSynopsysUSB40XHCI"
+  | |   "UsbHostControllerDeferRegisterService" = Yes
+  | |   "IOMatchCategory" = "usb-host"
+  | |   "CFBundleIdentifier" = "com.apple.driver.usb.AppleSynopsysUSB40XHCI"
+  | |   "IONameMatched" = "usb-drd,t8103"
+  | |   "UsbHostControllerUSB4LPMPolicy" = 1
+  | |   "UsbHostControllerStreamPolicy" = 2
+  | |   "UsbHostControllerTierLimit" = 6
+  | |   "controller-statistics" = {"kControllerStatIOCount"=16749,"kControllerStatPowerStateTime"={"kPowerStateInitialize"="0ms (0%)","kPowerStateOff"="23816587ms (88%)","kPowerStateSleep"="0ms (0%)","kPowerStateOn"="3104409ms (11%)","kPowerStateSuspended"="104ms (0%)"},"kControllerStatSpuriousInterruptCount"=0}
+  | |   "UsbHostControllerProtocolRevision" = "3.1"
+  | |   "kUSBSleepSupported" = Yes
+  | | }
+  | | 
+  | +-o USB2.0 Hub@01100000  <class IOUSBHostDevice, id 0x1000035e6, registered, matched, active, busy 0 (7582 ms), retain 35>
+  |   | {
+  |   |   "sessionID" = 572913452004
+  |   |   "USBSpeed" = 3
+  |   |   "UsbLinkSpeed" = 480000000
+  |   |   "idProduct" = 1544
+  |   |   "iManufacturer" = 0
+  |   |   "bDeviceClass" = 9
+  |   |   "IOPowerManagement" = {"PowerOverrideOn"=Yes,"CapabilityFlags"=32768,"MaxPowerState"=2,"DevicePowerState"=2,"DriverPowerState"=0,"ChildrenPowerState"=2,"CurrentPowerState"=2}
+  |   |   "bcdDevice" = 24720
+  |   |   "bMaxPacketSize0" = 64
+  |   |   "iProduct" = 1
+  |   |   "iSerialNumber" = 0
+  |   |   "bNumConfigurations" = 1
+  |   |   "kUSBContainerID" = "5dcb241c-9b71-42ed-8841-17e54d007b06"
+  |   |   "UsbDeviceSignature" = <e3050806090001090000>
+  |   |   "locationID" = 17825792
+  |   |   "bDeviceSubClass" = 0
+  |   |   "bcdUSB" = 512
+  |   |   "USB Product Name" = "USB2.0 Hub"
+  |   |   "USB Address" = 4
+  |   |   "IOCFPlugInTypes" = {"9dc7b780-9ec0-11d4-a54f-000a27052861"="IOUSBHostFamily.kext/Contents/PlugIns/IOUSBLib.bundle"}
+  |   |   "UsbDeviceFunction" = 3
+  |   |   "bDeviceProtocol" = 1
+  |   |   "USBPortType" = 5
+  |   |   "IOServiceDEXTEntitlements" = (("com.apple.developer.driverkit.transport.usb"))
+  |   |   "UsbExclusiveOwner" = "AppleUSB20Hub"
+  |   |   "Device Speed" = 2
+  |   |   "kUSBCurrentConfiguration" = 1
+  |   |   "idVendor" = 1507
+  |   |   "kUSBProductString" = "USB2.0 Hub"
+  |   |   "kUSBAddress" = 4
+  |   | }
+  |   | 
+  |   +-o USB Single Serial@01110000  <class IOUSBHostDevice, id 0x1000035f9, registered, matched, active, busy 0 (1815 ms), retain 28>
+  |   |   {
+  |   |     "sessionID" = 572920860094
+  |   |     "USBSpeed" = 1
+  |   |     "UsbLinkSpeed" = 12000000
+  |   |     "idProduct" = 21971
+  |   |     "iManufacturer" = 0
+  |   |     "bDeviceClass" = 2
+  |   |     "IOPowerManagement" = {"PowerOverrideOn"=Yes,"DevicePowerState"=2,"CurrentPowerState"=2,"CapabilityFlags"=32768,"MaxPowerState"=2,"DriverPowerState"=0}
+  |   |     "bcdDevice" = 1093
+  |   |     "bMaxPacketSize0" = 8
+  |   |     "iProduct" = 2
+  |   |     "iSerialNumber" = 3
+  |   |     "bNumConfigurations" = 1
+  |   |     "UsbDeviceSignature" = <861ad355354339333036333938350200000202010a0000>
+  |   |     "USB Product Name" = "USB Single Serial"
+  |   |     "locationID" = 17891328
+  |   |     "bDeviceSubClass" = 0
+  |   |     "bcdUSB" = 272
+  |   |     "kUSBSerialNumberString" = "5C93063985"
+  |   |     "USB Address" = 1
+  |   |     "IOCFPlugInTypes" = {"9dc7b780-9ec0-11d4-a54f-000a27052861"="IOUSBHostFamily.kext/Contents/PlugIns/IOUSBLib.bundle"}
+  |   |     "UsbPowerSinkAllocation" = 138
+  |   |     "bDeviceProtocol" = 0
+  |   |     "USBPortType" = 0
+  |   |     "IOServiceDEXTEntitlements" = (("com.apple.developer.driverkit.transport.usb"))
+  |   |     "kUSBCurrentConfiguration" = 1
+  |   |     "Device Speed" = 1
+  |   |     "idVendor" = 6790
+  |   |     "kUSBProductString" = "USB Single Serial"
+  |   |     "USB Serial Number" = "5C93063985"
+  |   |     "kUSBAddress" = 1
+  |   |   }
+  |   |   
+  |   +-o USB Type-C Digital AV Adapter@01140000  <class IOUSBHostDevice, id 0x100003606, registered, matched, active, busy 0 (494 ms), retain 23>
+  |   |   {
+  |   |     "kUSBSerialNumberString" = "000000000000"
+  |   |     "bDeviceClass" = 17
+  |   |     "UsbLinkSpeed" = 1500000
+  |   |     "bDeviceSubClass" = 0
+  |   |     "iSerialNumber" = 3
+  |   |     "IOServiceDEXTEntitlements" = (("com.apple.developer.driverkit.transport.usb"))
+  |   |     "iProduct" = 2
+  |   |     "USB Serial Number" = "000000000000"
+  |   |     "USB Vendor Name" = "xxxxxxxx"
+  |   |     "USBSpeed" = 2
+  |   |     "IOPowerManagement" = {"DevicePowerState"=1,"CurrentPowerState"=1,"CapabilityFlags"=65536,"MaxPowerState"=2,"DriverPowerState"=0}
+  |   |     "bNumConfigurations" = 1
+  |   |     "kUSBProductString" = "USB Type-C Digital AV Adapter"
+  |   |     "kUSBVendorString" = "xxxxxxxx"
+  |   |     "USB Product Name" = "USB Type-C Digital AV Adapter"
+  |   |     "iManufacturer" = 1
+  |   |     "idVendor" = 13372
+  |   |     "Device Speed" = 0
+  |   |     "UsbIdlePolicy" = 1000
+  |   |     "idProduct" = 0
+  |   |     "bcdDevice" = 0
+  |   |     "UsbDeviceSignature" = <3c340000303030303030303030303030110000110000>
+  |   |     "sessionID" = 572923006035
+  |   |     "USB Address" = 2
+  |   |     "UsbUserClientEntitlementRequired" = {"UsbUserClientEntitlement"="com.apple.developer.usb.billboard","UsbUserClientEntitlementExceptionAllowUnlocked"=Yes}
+  |   |     "IOCFPlugInTypes" = {"9dc7b780-9ec0-11d4-a54f-000a27052861"="IOUSBHostFamily.kext/Contents/PlugIns/IOUSBLib.bundle"}
+  |   |     "kUSBCurrentConfiguration" = 1
+  |   |     "USBPortType" = 0
+  |   |     "UsbPowerSinkAllocation" = 496
+  |   |     "bDeviceProtocol" = 0
+  |   |     "locationID" = 18087936
+  |   |     "kUSBAddress" = 2
+  |   |     "bcdUSB" = 513
+  |   |     "bMaxPacketSize0" = 8
+  |   |   }
+  |   |   
+  |   +-o Pro2 Controller@01130000  <class IOUSBHostDevice, id 0x100006275, registered, matched, active, busy 0 (339 ms), retain 25>
+  |       {
+  |         "sessionID" = 639388769593
+  |         "USBSpeed" = 1
+  |         "UsbLinkSpeed" = 12000000
+  |         "idProduct" = 1911
+  |         "iManufacturer" = 1
+  |         "bDeviceClass" = 239
+  |         "IOPowerManagement" = {"PowerOverrideOn"=Yes,"DevicePowerState"=2,"CurrentPowerState"=2,"CapabilityFlags"=32768,"MaxPowerState"=2,"DriverPowerState"=0}
+  |         "bcdDevice" = 256
+  |         "bMaxPacketSize0" = 64
+  |         "iProduct" = 2
+  |         "iSerialNumber" = 3
+  |         "bNumConfigurations" = 1
+  |         "UsbDeviceSignature" = <77077707303030303030ef02010202000a0000>
+  |         "USB Product Name" = "Pro2 Controller"
+  |         "locationID" = 18022400
+  |         "bDeviceSubClass" = 2
+  |         "bcdUSB" = 512
+  |         "kUSBSerialNumberString" = "000000"
+  |         "USB Address" = 3
+  |         "IOCFPlugInTypes" = {"9dc7b780-9ec0-11d4-a54f-000a27052861"="IOUSBHostFamily.kext/Contents/PlugIns/IOUSBLib.bundle"}
+  |         "kUSBCurrentConfiguration" = 1
+  |         "bDeviceProtocol" = 1
+  |         "USBPortType" = 0
+  |         "IOServiceDEXTEntitlements" = (("com.apple.developer.driverkit.transport.usb"))
+  |         "USB Vendor Name" = "PITC"
+  |         "Device Speed" = 1
+  |         "idVendor" = 1911
+  |         "kUSBProductString" = "Pro2 Controller"
+  |         "USB Serial Number" = "000000"
+  |         "kUSBAddress" = 3
+  |         "kUSBVendorString" = "PITC"
+  |       }
+  |       
+  +-o AppleT8103USBXHCI@00000000  <class AppleT8103USBXHCI, id 0x100000416, registered, matched, active, busy 0 (61 ms), retain 27>
+      {
+        "IOClass" = "AppleT8103USBXHCI"
+        "kUSBSleepPortCurrentLimit" = 3000
+        "UsbHostControllerSoftRetryPolicy" = 0
+        "IOPersonalityPublisher" = "com.apple.driver.usb.AppleSynopsysUSB40XHCI"
+        "IOMatchedAtBoot" = Yes
+        "IOPowerManagement" = {"ChildrenPowerState"=0,"DevicePowerState"=0,"CurrentPowerState"=0,"CapabilityFlags"=0,"MaxPowerState"=3,"DriverPowerState"=0}
+        "IOProviderClass" = "AppleARMIODevice"
+        "IOProbeScore" = 10001
+        "locationID" = 0
+        "kUSBWakePortCurrentLimit" = 3000
+        "IONameMatch" = "usb-drd,t8103"
+        "CFBundleIdentifierKernel" = "com.apple.driver.usb.AppleSynopsysUSB40XHCI"
+        "UsbHostControllerDeferRegisterService" = Yes
+        "IOMatchCategory" = "usb-host"
+        "CFBundleIdentifier" = "com.apple.driver.usb.AppleSynopsysUSB40XHCI"
+        "IONameMatched" = "usb-drd,t8103"
+        "UsbHostControllerUSB4LPMPolicy" = 1
+        "UsbHostControllerStreamPolicy" = 2
+        "UsbHostControllerTierLimit" = 6
+        "controller-statistics" = {"kControllerStatIOCount"=0,"kControllerStatPowerStateTime"={"kPowerStateInitialize"="0ms (0%)","kPowerStateOff"="26921033ms (99%)","kPowerStateSleep"="0ms (0%)","kPowerStateOn"="6ms (0%)","kPowerStateSuspended"="0ms (0%)"},"kControllerStatSpuriousInterruptCount"=0}
+        "UsbHostControllerProtocolRevision" = "3.1"
+        "kUSBSleepSupported" = Yes
+      }
+      

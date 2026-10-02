@@ -1,0 +1,28 @@
+# macOS bench-host override (spec §10.7, ADR-0014).
+#
+# One difference from the Linux canonical form: where the board lives.
+#
+#   Linux    /dev/ttyACM0                    — the kernel's cdc_acm node
+#   macOS    /dev/cu.usbmodem5C930639851     — Apple's CDC driver, named from the USB
+#                                              Serial Number; there is no /dev/ttyACM*
+#
+# Two things this file is careful about:
+#
+# 1. The container-internal path stays /dev/ttyACM0, so no container code and no other
+#    chapter changes. The macOS node is deployment configuration only.
+# 2. The host node comes from $NS2_PORT rather than a hardcoded name. macOS has no
+#    /dev/serial/by-id, and a `usbmodem*` glob is unsafe here — this host carries a second
+#    such node (a Type-C AV adapter), which is how §10.3's "wrong port" trap happens.
+#    Resolve it by serial number, which also makes the :? below fail loudly if it is unset:
+#
+#      export NS2_PORT="$(python3 scripts/find_serial_port.py)"
+#      docker compose -f container/compose.yaml -f container/compose.macos.yaml up
+#
+# OrbStack's serial forwarding is what makes this work, and it is non-exclusive: macOS keeps
+# the node, so `idf.py -p "$NS2_PORT" flash` still works with the container stopped (§10.2).
+# Do NOT use `orb usb attach` — it detaches the board from macOS and breaks that.
+
+services:
+  controller:
+    devices:
+      - "${NS2_PORT:?set NS2_PORT via scripts/find_serial_port.py}:/dev/ttyACM0"

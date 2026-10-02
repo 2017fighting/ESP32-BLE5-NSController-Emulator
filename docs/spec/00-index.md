@@ -47,6 +47,7 @@ the result of a real trade-off. The spec assumes them; it does not restate them.
 | [0011](../adr/0011-amiibo-identity-minted-container-side.md) | Identity is minted container-side; the device is a byte-sink |
 | [0012](../adr/0012-key-material-is-a-read-only-mount.md) | Key material is a read-only mount, never written, never forwarded |
 | [0013](../adr/0013-firmware-owns-pairing.md) | The firmware owns pairing; the container observes |
+| [0014](../adr/0014-macos-bench-path.md) | The macOS bench path is OrbStack forwarding, and the host keeps the port |
 
 ## Vocabulary
 
@@ -87,7 +88,8 @@ and the storage/OTA partitions (unclaimed, §7.8).
 
 ## ADR selection
 
-Sixteen candidates were raised across the map. They were judged against the bar — hard to
+**Seventeen candidates** were raised across the map (the seventeenth from #17, after the
+selection below was first written). They were judged against the bar — hard to
 reverse, surprising without context, the result of a real trade-off — and the three that did
 not clear all three were **declined rather than written as padding**. The record, because
 "why isn't there an ADR for X" is its own question later:
@@ -107,6 +109,7 @@ not clear all three were **declined rather than written as padding**. The record
 | Amiibo identity minted container-side; the device is a byte-sink | #9 | **Accepted** — ADR-0011 |
 | Key material is a read-only mount, never written, never forwarded | #13 | **Accepted** — ADR-0012, *overriding #13's own judgement* (below) |
 | Firmware owns pairing (Q12) | map Q12 | **Accepted** — ADR-0013 |
+| The macOS bench path: OrbStack forwarding, with the host keeping the port | #17 | **Accepted** — ADR-0014. It clears the bar where #7's *port as configuration* did not: it has a rejected alternative with a real cost (a native venv, which would leave the container unexercised on the only bench host) and a surprising outcome (no WCH driver is needed, and `orb usb attach` is the wrong tool) |
 | Single-process container | #7 | **Declined** — the seam that matters is the module interface (§8.2), not a process boundary; splitting later changes no protocol and no interface. Not hard to reverse |
 | The port as configuration, with Q2's literal path as the default | #7 | **Declined** — one constant to change; a reader would not wonder why. It stays a chapter rule (§8.3) rather than a decision of record |
 | `esp32-joycontrol` is untrusted (Q13) | map Q13 | **Declined** — a sourcing rule, not an architectural choice. It lives in `docs/references.md` and ADR-0005 |

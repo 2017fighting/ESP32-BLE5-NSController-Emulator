@@ -1,0 +1,27 @@
+# The container — Linux canonical form (spec §10.4).
+#
+# This file is the documented default deployment and is transcribed from the locked chapter;
+# it is NOT the container skeleton. Ticket "Container skeleton, the web seam and the four
+# screens" owns the real image, the seams and the screens, and will edit this file.
+#
+# On the macOS bench host this file is NOT used alone: the board is not at /dev/ttyACM0 there,
+# so it is layered with the override, which changes only the devices: mapping.
+#
+#   docker compose -f container/compose.yaml up                      # Linux
+#   docker compose -f container/compose.yaml \
+#                  -f container/compose.macos.yaml up                # macOS (ADR-0014)
+#
+# The single port is passed through; never --privileged (§10.4).
+
+services:
+  controller:
+    image: ghcr.io/<owner>/ns2-controller:latest
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0
+    volumes:
+      - "$HOME/clone/switch-controller-macro/宏:/library/macros:ro"
+      - "$HOME/clone/Amiibo:/library/amiibo:ro"
+      - "$HOME/clone/Amiibo/!Essential Files/key_retail.bin:/keys/key_retail.bin:ro"
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
