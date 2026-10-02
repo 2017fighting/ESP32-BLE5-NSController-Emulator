@@ -64,6 +64,51 @@ def extract_flash_size_from_args(flash_args_lines):
     return None
 
 
+def esptool_argv():
+    """The argv prefix that runs esptool on this host.
+
+    `python -m esptool` — not a bare `esptool` — because the console script's name depends on
+    the esptool version: v4 installs it as `esptool.py` and the rename to `esptool` lands in
+    v5. ESP-IDF v5.5.5's venv ships esptool v4.12.0, so a bare `esptool` is simply not on
+    PATH and the packaging step dies *after* a successful build. The module spelling works
+    for every v4/v5 esptool, and it is what ESP-IDF's own flash instructions use.
+
+    Returns:
+        list: argv prefix for an esptool invocation, under this script's interpreter.
+    """
+    return [sys.executable, "-m", "esptool"]
+
+
+def build_merge_command(idf_target, flash_args_lines, output_path):
+    """Build the `merge_bin` argv for the given `flash_args` contents.
+
+    The layout mirrors what `flash_args` carries: line 0 is the flash parameters, every
+    later line is an `offset file` pair.
+
+    Args:
+        idf_target (str): e.g. "esp32s3".
+        flash_args_lines (list): Lines from `build/flash_args`.
+        output_path (str): Path for the merged image.
+
+    Returns:
+        list: Complete argv for `esptool merge_bin`.
+    """
+    cmd = esptool_argv() + ["--chip", idf_target, "merge_bin"]
+
+    # Add flash parameters from first line (if present)
+    if flash_args_lines:
+        cmd.extend(flash_args_lines[0].split())
+
+    cmd.extend(["-o", output_path])
+
+    # Add offset+file pairs from remaining lines
+    for line in flash_args_lines[1:]:
+        if line.strip():  # Skip empty lines
+            cmd.extend(line.split())
+
+    return cmd
+
+
 def read_flash_args(build_dir):
     """
     Read flash_args file and return its content as list of lines.
@@ -132,21 +177,7 @@ def package_firmware(output_dir=None):
     output_path = os.path.join(output_dir, output_filename)
 
     # Build esptool command
-    cmd = ["esptool", "--chip", idf_target, "merge_bin"]
-
-    # Add flash parameters from first line (if present)
-    if flash_args_lines:
-        # First line contains flash parameters
-        flash_params = flash_args_lines[0].split()
-        cmd.extend(flash_params)
-
-    # Add output argument
-    cmd.extend(["-o", output_path])
-
-    # Add offset+file pairs from remaining lines
-    for line in flash_args_lines[1:]:
-        if line.strip():  # Skip empty lines
-            cmd.extend(line.split())
+    cmd = build_merge_command(idf_target, flash_args_lines, output_path)
 
     print(f"Packaging firmware for {idf_target} ({flash_size_mb}MB)...")
     print(f"Command: {' '.join(cmd)}")
@@ -169,7 +200,11 @@ def package_firmware(output_dir=None):
         return output_path
 
     except FileNotFoundError:
-        print("Error: esptool not found. Make sure esptool is installed and in PATH.", file=sys.stderr)
+        print(
+            "Error: could not run esptool. Make sure the ESP-IDF environment is exported "
+            "(. ./export.sh) so that `python -m esptool` resolves.",
+            file=sys.stderr,
+        )
         return None
     except Exception as e:
         print(f"Error: Failed to execute esptool: {e}", file=sys.stderr)
