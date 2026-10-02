@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the NS2 controller board's serial port on macOS.
+"""Resolve the device's serial port on macOS.
 
 Why this exists: §10.5 pins a re-plugged board by `/dev/serial/by-id` on Linux, and macOS
 has no `devfs` equivalent — no `udev`, no `/dev/serial/by-id`, no `/dev/ttyACM*`. What macOS
@@ -84,6 +84,24 @@ class UsbDevice:
         value = self.properties.get("USB Product Name")
         return value if isinstance(value, str) else None
 
+    def matches(
+        self,
+        vendor_id: int = DEFAULT_VENDOR_ID,
+        product_id: int = DEFAULT_PRODUCT_ID,
+        serial: str | None = None,
+    ) -> bool:
+        """Whether this is the bridge we are looking for.
+
+        The test lives here rather than in `match_devices` because every field it reads is
+        this type's own; the caller should not have to reach into four properties to ask one
+        question.
+        """
+        return (
+            self.vendor_id == vendor_id
+            and self.product_id == product_id
+            and (serial is None or self.serial == serial)
+        )
+
 
 def _parse_value(raw: str) -> object:
     """`6790` -> int, `"5C93063985"` -> str, `{...}`/`<...>`/`(...)` -> raw text."""
@@ -138,9 +156,7 @@ def match_devices(
     return [
         device
         for device in devices
-        if device.vendor_id == vendor_id
-        and device.product_id == product_id
-        and (serial is None or device.serial == serial)
+        if device.matches(vendor_id, product_id, serial)
     ]
 
 

@@ -63,8 +63,9 @@ idf.py -p /dev/ttyACM0 flash
 # or, for a fresh board with no toolchain:
 esptool.py -p /dev/ttyACM0 write_flash 0x0 release/ns-controller-esp32s3n16.bin
 
-# on the macOS bench host the port is the forwarded node, not /dev/ttyACM0:
-idf.py -p /dev/cu.usbmodem5C930639851 flash
+# on the macOS bench host the port is the resolved node, not /dev/ttyACM0 (§10.7):
+export NS2_PORT="$(python3 scripts/find_serial_port.py)"
+idf.py -p "$NS2_PORT" flash
 ```
 
 Then start the container again. Nothing needs to be re-paired after a flash, because the bond
@@ -92,6 +93,12 @@ shown below. `container/compose.macos.yaml` is an override that changes **only**
 mapping, so the platform difference is versioned rather than buried in prose. It takes the host
 node from `$NS2_PORT` rather than naming it, because the macOS node is host-specific and must
 be resolved, not guessed (§10.7):
+
+> Compose merges `devices:` **per container-side target**: an entry with the same target replaces
+the base's, one with a different target is appended beside it. So the override is correct *because*
+it keeps the target `/dev/ttyACM0` — changing the container-side path would silently retain the
+base's `/dev/ttyACM0:/dev/ttyACM0` and fail on a host device macOS does not have. Measured on
+Compose v5.1.2.
 
 ```sh
 # Linux

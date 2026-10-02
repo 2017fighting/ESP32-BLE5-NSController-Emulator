@@ -82,6 +82,13 @@ class MatchDevices(unittest.TestCase):
         matched = fsp.match_devices(load_devices(), vendor_id=0x343C, product_id=0x0000)
         self.assertEqual([d.serial for d in matched], ["000000000000"])
 
+    def test_matches_is_the_predicate_the_list_filter_uses(self):
+        board = next(d for d in load_devices() if d.name == "USB Single Serial")
+        self.assertTrue(board.matches())
+        self.assertTrue(board.matches(serial="5C93063985"))
+        self.assertFalse(board.matches(serial="DEADBEEF"))
+        self.assertFalse(board.matches(vendor_id=0x343C, product_id=0x0000))
+
 
 class Resolve(unittest.TestCase):
     def setUp(self):

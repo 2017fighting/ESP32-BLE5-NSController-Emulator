@@ -33,7 +33,7 @@ open sequence, and its mount rules are exactly what §10 already says.
 
 The decision rests on measurement, not on the vendor documentation, because the earlier
 research record on this subject was written with no board attached and got two of its
-hardware-dependent claims wrong. `docs/research/macos-bench-path.md` holds the evidence:
+hardware-dependent claims wrong. `macos-bench-path.md` holds the evidence:
 serial forwarding puts a real `cdc_acm` node in the container (§4), the port opens with
 DTR/RTS deasserted and an RTS pulse resets the board *from inside the container* (§7b), the
 macOS node survives the container's use so the host can still flash (§7c), a 256 KiB

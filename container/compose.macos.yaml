@@ -21,6 +21,15 @@
 # OrbStack's serial forwarding is what makes this work, and it is non-exclusive: macOS keeps
 # the node, so `idf.py -p "$NS2_PORT" flash` still works with the container stopped (§10.2).
 # Do NOT use `orb usb attach` — it detaches the board from macOS and breaks that.
+#
+# WHY THIS FILE MUST KEEP THE TARGET AS /dev/ttyACM0:
+# Compose does not replace a `devices:` list wholesale — it merges per container-side target.
+# An entry with the same target replaces the base's; an entry with a DIFFERENT target is
+# appended alongside it. Measured on Compose v5.1.2: this override yields one device, because
+# the target matches the base's; an override targeting /dev/ttyUSB0 instead yields two, keeping
+# the base's `/dev/ttyACM0:/dev/ttyACM0` — a host device that does not exist on macOS, so
+# `docker compose up` then fails. Keeping the container path at /dev/ttyACM0 is what makes this
+# correct, and that is the same fact the whole macOS decision rests on (§10.5, ADR-0014).
 
 services:
   controller:
