@@ -101,13 +101,13 @@ class AcceptanceTable(unittest.TestCase):
                 self.assertEqual(plan.identity_hex[:16], identity16)
 
     def test_sum_of_holds_equals_loop_ms(self):
-        from container.ns2plan import iter_events
+        from container.ns2plan import iter_frames
 
         for filename, *_ in ACCEPTANCE_TABLE:
             with self.subTest(macro=filename):
                 plan = self._compile(filename)
                 self.assertEqual(
-                    sum(hold for _, hold in iter_events(plan)), plan.loop_ms
+                    sum(hold for _, hold in iter_frames(plan)), plan.loop_ms
                 )
 
 

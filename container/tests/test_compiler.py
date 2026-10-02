@@ -26,7 +26,7 @@ from container.ns2plan import (  # noqa: E402
     compile_macro,
     encode_stick,
     encode_stick_axis,
-    iter_events,
+    iter_frames,
     pack_stick_data,
     payload_size,
     plan_identity,
@@ -145,20 +145,20 @@ class Buttons(unittest.TestCase):
     def test_every_known_name_sets_its_bit(self):
         for name, (byte, bit) in BUTTON_BITS.items():
             plan = compile_macro([button(0, name, True)])
-            state, _ = next(iter(iter_events(plan)))
+            state, _ = next(iter(iter_frames(plan)))
             self.assertEqual(state[byte], 1 << bit, name)
 
     def test_buttons_are_never_filtered(self):
         # Two button changes 1 ms apart: both land, unlike the stick filter.
         plan = compile_macro([button(0, "a", True), button(1, "a", False)])
         self.assertEqual(plan.record_count, 2)
-        states = list(iter_events(plan))
+        states = list(iter_frames(plan))
         self.assertEqual(states[0][0][0], 0x02)
         self.assertEqual(states[1][0][0], 0x00)
 
     def test_press_and_release_round_trip(self):
         plan = compile_macro([button(0, "plus", True), button(125.0, "plus", False)])
-        states = list(iter_events(plan))
+        states = list(iter_frames(plan))
         self.assertEqual(len(states), 2)
         self.assertEqual(states[0][1], 125)
         self.assertEqual(states[1][0][0], 0x00)  # plus is byte 0 bit 6 -> 0x40
@@ -174,7 +174,7 @@ class StickFilterAndMerge(unittest.TestCase):
             for i, t in enumerate((0, 5, 10, 15, 20))
         ]
         plan = compile_macro(events)
-        holds = [hold for _, hold in iter_events(plan)]
+        holds = [hold for _, hold in iter_frames(plan)]
         self.assertEqual(plan.record_count, 3)
         self.assertEqual(holds, [10, 10, 0])
         self.assertEqual(plan.loop_ms, 20)
@@ -191,22 +191,53 @@ class StickFilterAndMerge(unittest.TestCase):
     def test_noop_state_is_folded(self):
         plan = compile_macro([button(0, "a", True), button(100, "a", True)])
         self.assertEqual(plan.record_count, 1)
-        self.assertEqual(next(iter_events(plan))[1], 100)
+        self.assertEqual(next(iter_frames(plan))[1], 100)
 
     def test_same_millisecond_merges_into_the_later_state(self):
         plan = compile_macro([button(0.1, "a", True), button(0.4, "b", True)])
         self.assertEqual(plan.record_count, 1)
-        state, hold = next(iter_events(plan))
+        state, hold = next(iter_frames(plan))
         self.assertEqual(state[0], 0x03)  # a (bit 1) | b (bit 0)
         self.assertEqual(hold, 0)
 
     def test_no_trailing_neutral_frame(self):
         # Neutral is executor-owned (§4.6); the last authored state ends the plan.
         plan = compile_macro([button(0, "a", True), button(10, "a", False)])
-        states = list(iter_events(plan))
+        states = list(iter_frames(plan))
         self.assertEqual(len(states), 2)
         self.assertEqual(states[-1][0][0], 0x00)
         self.assertEqual(states[-1][1], 0)  # runs to loop_ms, may be 0
+
+    def test_leading_span_before_the_first_change_is_kept(self):
+        # A leading no-op must not lose the span [0, first change): the plan
+        # still starts from the initial (neutral) state at t0.
+        plan = compile_macro([button(0, "a", False), button(5, "a", True)])
+        self.assertEqual(plan.record_count, 2)
+        frames = list(iter_frames(plan))
+        self.assertEqual(frames[0][0], (0, 0, 0, 2048, 2048, 2048, 2048))
+        self.assertEqual(frames[0][1], 5)
+        self.assertEqual(frames[1][0][0], 0x02)
+        self.assertEqual(frames[1][1], 0)
+        self.assertEqual(sum(hold for _, hold in frames), plan.loop_ms)
+
+    def test_all_noop_macro_is_one_neutral_frame(self):
+        plan = compile_macro([button(0, "a", False), button(100, "a", False)])
+        self.assertEqual(plan.loop_ms, 100)
+        self.assertEqual(plan.record_count, 1)
+        state, hold = next(iter_frames(plan))
+        self.assertEqual(state, (0, 0, 0, 2048, 2048, 2048, 2048))
+        self.assertEqual(hold, 100)
+
+    def test_same_millisecond_revert_folds_both_frames(self):
+        # b is pressed and released at the same rounded millisecond, so the
+        # merge lands back on the previous state and both frames cancel.
+        plan = compile_macro(
+            [button(0, "a", True), button(10, "b", True), button(10, "b", False)]
+        )
+        self.assertEqual(plan.record_count, 1)
+        state, hold = next(iter_frames(plan))
+        self.assertEqual(state[0], 0x02)  # a is still held
+        self.assertEqual(hold, 10)
 
     def test_loop_ms_is_the_rounded_span(self):
         plan = compile_macro(

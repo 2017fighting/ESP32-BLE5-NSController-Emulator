@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the checked-in plan fixture from a macro file (§5.7).
+"""Regenerate the checked-in plan fixture from a macro (§5.7).
 
 The fixture is frozen, not derived at test time: this script exists so a
 deliberate format change can re-freeze it, and so the bytes are reproducible

@@ -4,6 +4,12 @@ Identity is a container-owned SHA-256 over the compiled payload, truncated to
 16 bytes. The cache is keyed ``(path, mtime, size)`` and lives in memory only:
 a compiler or format change yields a new identity and forces a re-upload, and
 nothing compiled is ever written to disk.
+
+A note on the two wordings: §8.4 keys the cache by file identity
+``(path, mtime, size)``, while ADR-0010 says "keyed by that hash". The file key
+is what the library scanner and its ``Rescan`` need, and each entry carries the
+plan's identity anyway, so the §5.6 echo comparison uses the plan the container
+sent. The discrepancy is surfaced on issue #20 rather than silently reconciled.
 """
 
 from __future__ import annotations
@@ -15,10 +21,7 @@ from os import PathLike
 from .compiler import (
     MacroRejected,
     Plan,
-    PlanHashMismatch,
-    assert_echo,
     compile_json,
-    hash_matches,
 )
 
 
@@ -100,19 +103,5 @@ class PlanCache:
         for key in [key for key in self._entries if key[0] == path and key != keep]:
             del self._entries[key]
 
-    @staticmethod
-    def verify_echo(sent: bytes, echoed: bytes) -> None:
-        """Compare the device's echoed ``plan_hash`` against ours (§5.6).
 
-        The device never hashes anything (ADR-0010), so this comparison is the
-        only thing standing between a drifted plan and a run rendered as
-        current. Raises :class:`PlanHashMismatch` when they disagree.
-        """
-        assert_echo(sent, echoed)
-
-    @staticmethod
-    def echo_matches(sent: bytes, echoed: bytes) -> bool:
-        return hash_matches(sent, echoed)
-
-
-__all__ = ["PlanCache", "PlanCacheEntry", "PlanHashMismatch"]
+__all__ = ["PlanCache", "PlanCacheEntry"]

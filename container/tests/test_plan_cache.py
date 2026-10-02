@@ -17,6 +17,8 @@ from container.ns2plan import (  # noqa: E402
     MacroRejected,
     PlanCache,
     PlanHashMismatch,
+    assert_echo,
+    hash_matches,
 )
 
 MACRO_A = b'[{"t":0,"ev":{"type":"button","name":"a","pressed":true}}]'
@@ -95,12 +97,12 @@ class HashContractTests(unittest.TestCase):
     def test_echo_agreement_passes_and_disagreement_raises(self):
         cache = PlanCache()
         plan = cache.load(support.correction_macro_path())
-        self.assertTrue(cache.echo_matches(plan.identity, plan.identity))
-        cache.verify_echo(plan.identity, plan.identity)
+        self.assertTrue(hash_matches(plan.identity, plan.identity))
+        assert_echo(plan.identity, plan.identity)
         flipped = bytes([plan.identity[0] ^ 0x01]) + plan.identity[1:]
-        self.assertFalse(cache.echo_matches(plan.identity, flipped))
+        self.assertFalse(hash_matches(plan.identity, flipped))
         with self.assertRaises(PlanHashMismatch):
-            cache.verify_echo(plan.identity, flipped)
+            assert_echo(plan.identity, flipped)
 
 
 if __name__ == "__main__":

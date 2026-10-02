@@ -131,6 +131,18 @@ class Plan:
         return len(self.payload)
 
 
+# A full controller state: 3 button bytes + four u12 stick axes (§5.2 step 2).
+State = tuple[int, int, int, int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _Frame:
+    """A plan frame under construction: a state and the ms it starts at."""
+
+    start_ms: int
+    state: State
+
+
 def plan_identity(payload: bytes) -> bytes:
     """The container-owned plan identity: SHA-256 truncated to 16 bytes.
 
@@ -317,7 +329,7 @@ def _validate_event(
     return t, dict(ev)
 
 
-def _apply_event(state: tuple[int, ...], ev: Mapping[str, Any]) -> tuple[int, ...]:
+def _apply_event(state: State, ev: Mapping[str, Any]) -> State:
     buttons = [state[0], state[1], state[2]]
     left = [state[3], state[4]]
     right = [state[5], state[6]]
@@ -379,8 +391,12 @@ def compile_macro(
     t_first = validated[0][0]
     loop_ms = round(validated[-1][0] - t_first)
 
-    state = _NEUTRAL_STATE
-    records: list[list[int | tuple[int, ...]]] = []  # [start_ms, state]
+    state: State = _NEUTRAL_STATE
+    # §5.2: a plan starts from the initial state at t0 = t_first. Seeding that
+    # first frame keeps a macro whose first change lands later — or that never
+    # changes at all — from losing its leading span; a change at t0 merges into
+    # it (start 0), which leaves the four real macros byte-identical.
+    frames: list[_Frame] = [_Frame(0, _NEUTRAL_STATE)]
     last_kept: dict[str, float] = {side: -math.inf for side in STICK_SIDES}
 
     for t, ev in validated:
@@ -397,11 +413,16 @@ def compile_macro(
             continue  # §5.2 step 4: no-op suppression, folded into the hold
 
         start = round(t - t_first)
-        if records and start == records[-1][0]:
+        if start == frames[-1].start_ms:
             # §5.2 step 5: same rounded millisecond merges into the later state.
-            records[-1][1] = new_state
+            frames[-1] = _Frame(start, new_state)
+            # If the merge lands back on the state before it, the two changes
+            # cancel and both fold away (§5.2 step 4: one record per distinct
+            # state, no zero-length middle frame).
+            if len(frames) >= 2 and frames[-2].state == new_state:
+                frames.pop()
         else:
-            records.append([start, new_state])
+            frames.append(_Frame(start, new_state))
         state = new_state
 
     header = struct.pack(
@@ -409,23 +430,23 @@ def compile_macro(
         PLAN_MAGIC,
         PLAN_FORMAT_VERSION,
         PLAN_RECORD_SIZE,
-        len(records),
+        len(frames),
         loop_ms,
     )
     chunks = [header]
     total_hold = 0
-    for index, (start, record_state) in enumerate(records):
-        next_start = records[index + 1][0] if index + 1 < len(records) else loop_ms
-        hold = int(next_start) - int(start)
+    for index, frame in enumerate(frames):
+        next_start = frames[index + 1].start_ms if index + 1 < len(frames) else loop_ms
+        hold = next_start - frame.start_ms
         if hold > MAX_HOLD_MS:
             raise MacroRejected(
                 f"single hold is {hold} ms, above the u16 ceiling",
                 code="HOLD_TOO_LONG",
             )
         total_hold += hold
-        buttons = bytes(record_state[0:3])
-        left = pack_stick_data(record_state[3], record_state[4])
-        right = pack_stick_data(record_state[5], record_state[6])
+        buttons = bytes(frame.state[0:3])
+        left = pack_stick_data(frame.state[3], frame.state[4])
+        right = pack_stick_data(frame.state[5], frame.state[6])
         chunks.append(buttons + left + right + struct.pack("<H", hold))
 
     # §5.5 self-check: sum(hold) == round(t_last - t_first).
@@ -435,7 +456,7 @@ def compile_macro(
         )
 
     payload = b"".join(chunks)
-    if len(payload) != payload_size(len(records)):  # pragma: no cover - invariant
+    if len(payload) != payload_size(len(frames)):  # pragma: no cover - invariant
         raise AssertionError("plan payload length does not match record count")
     if capacity_bytes is not None and len(payload) > capacity_bytes:
         raise MacroRejected(
@@ -443,7 +464,7 @@ def compile_macro(
             f"{capacity_bytes}",
             code="PLAN_TOO_LARGE",
         )
-    return Plan(payload=payload, record_count=len(records), loop_ms=loop_ms)
+    return Plan(payload=payload, record_count=len(frames), loop_ms=loop_ms)
 
 
 def compile_json(raw: str | bytes, *, capacity_bytes: int | None = None) -> Plan:
@@ -465,11 +486,12 @@ def load_plan(path: str | PathLike[str], *, capacity_bytes: int | None = None) -
         return compile_json(handle.read(), capacity_bytes=capacity_bytes)
 
 
-def iter_events(plan: Plan) -> Iterable[tuple[tuple[int, ...], int]]:
-    """Decode ``(state, hold_ms)`` pairs from a compiled plan.
+def iter_frames(plan: Plan) -> Iterable[tuple[State, int]]:
+    """Decode ``(state, hold_ms)`` plan frames from a compiled plan.
 
-    The inverse of the record writer: ``state`` is
-    ``(b0, b1, b2, lx, ly, rx, ry)``. Used by tests and by the frame trace.
+    The inverse of the frame writer: ``state`` is
+    ``(b0, b1, b2, lx, ly, rx, ry)``. A *plan frame*, never an "event"
+    (CONTEXT.md); used by tests and by the frame trace.
     """
     header = struct.unpack_from("<IBBHI", plan.payload, 0)
     magic, version, record_size, record_count, loop_ms = header
