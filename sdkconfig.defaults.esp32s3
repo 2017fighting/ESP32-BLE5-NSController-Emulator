@@ -24,9 +24,18 @@ CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE=y
 # S3 on the legacy path. Evidence: docs/research/s3-bringup.md.
 # CONFIG_BT_NIMBLE_EXT_ADV is not set
 
-# use usb cdc for transport layer
-CONFIG_TRANSPORT_LAYER_USB_CDC=y
-CONFIG_TINYUSB_CDC_ENABLED=y
+# The control plane rides UART0 — the CH9102 bridge, where ESP_LOG lives
+# (ADR-0001, spec §2.1). The native OTG port is deliberately unused, so this
+# supersedes the base's "use usb cdc for transport layer" for the S3 build.
+CONFIG_TRANSPORT_LAYER_UART=y
+CONFIG_CONTROL_UART_PORT=0
+# 921600 is the spec's recommendation, not a measurement; bench ticket #33
+# settles it and 115200 is the documented fallback (G-1).
+CONFIG_CONTROL_UART_BAUD=921600
+# -1 keeps UART0's chip-default IO_MUX pins (the CH9102).
+CONFIG_CONTROL_UART_RX_PIN=-1
+CONFIG_CONTROL_UART_TX_PIN=-1
+CONFIG_PROTOCOL_LAYER_CONTROL=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # S3

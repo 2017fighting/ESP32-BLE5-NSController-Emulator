@@ -19,9 +19,13 @@ menu "NSController Configuration"
             Select the physical transport layer for controller communication.
 
         config TRANSPORT_LAYER_UART
-            bool "UART (GPIO4/5, default)"
+            bool "UART (UART0/CH9102 by default; see CONTROL_UART_*)"
             help
-                Use UART1 (GPIO4=RX, GPIO5=TX) for communication.
+                Use the UART transport. The control plane rides UART0 (the
+                CH9102 bridge, where ESP_LOG lives — ADR-0001); the pins and
+                baud come from the CONTROL_UART_* options below. Selecting
+                UART1/GPIO4-5 for the legacy EasyCon wiring is still possible by
+                setting CONTROL_UART_PORT=1 and the two pins to 4 and 5.
 
         config TRANSPORT_LAYER_USB_SERIAL_JTAG
             bool "USB Serial/JTAG (USB port)"
@@ -54,6 +58,12 @@ menu "NSController Configuration"
         config PROTOCOL_LAYER_SIMPLE
             bool "Simple protocol layer (default)"
 
+        config PROTOCOL_LAYER_CONTROL
+            bool "CONTROL protocol layer (control plane, §2)"
+            help
+                The NS2 control plane: COBS+CRC framing, HELLO/STATUS and the
+                canonical ERROR table. Stages follow docs/spec/12-handoff.md.
+
         config PROTOCOL_LAYER_EASYCON
             bool "EasyCon protocol layer"
     endchoice
@@ -62,18 +72,39 @@ menu "NSController Configuration"
         int
         default 0 if PROTOCOL_LAYER_SIMPLE
         default 1 if PROTOCOL_LAYER_EASYCON
+        default 2 if PROTOCOL_LAYER_CONTROL
 
-    config UART_RX_PIN
-        int "UART RX Pin (GPIO)"
-        default 4
+    config CONTROL_UART_PORT
+        int "Control-plane UART port (0 = UART0/CH9102 console)"
+        default 0
+        range 0 2
         help
-            GPIO number for UART RX pin. Default is GPIO4.
+            UART0 is the CH9102 bridge the control plane shares with ESP_LOG
+            (spec §2.1). Port 1 with pins 4/5 is the legacy EasyCon header.
 
-    config UART_TX_PIN
-        int "UART TX Pin (GPIO)"
-        default 5
+    config CONTROL_UART_BAUD
+        int "Control-plane UART baud rate"
+        default 921600
         help
-            GPIO number for UART TX pin. Default is GPIO5.
+            921600 is the spec's recommendation (spec §2.1, G-1); it is a
+            recommendation, not a measurement. Bench ticket #33 settles it, and
+            the documented fallback is 115200.
+
+    config CONTROL_UART_RX_PIN
+        int "Control-plane UART RX pin (-1 = chip default)"
+        default -1
+        range -1 48
+        help
+            -1 keeps the chip's default IO_MUX pin, which is what UART0's
+            CH9102 wiring wants. Set 4 for the legacy UART1/GPIO4 header.
+
+    config CONTROL_UART_TX_PIN
+        int "Control-plane UART TX pin (-1 = chip default)"
+        default -1
+        range -1 48
+        help
+            -1 keeps the chip's default IO_MUX pin. Set 5 for the legacy
+            UART1/GPIO5 header.
 
     config HID_REPORT_INTERVAL
         int "HID Report Interval (ms)"

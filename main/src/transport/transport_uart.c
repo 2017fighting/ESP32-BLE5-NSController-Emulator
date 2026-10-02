@@ -10,6 +10,8 @@
 #include "driver/uart.h"
 #include "esp_log.h"
 
+#include "protocol/control/control_link.h"
+
 #define TAG "transport_uart"
 
 #if CONFIG_IDF_TARGET_ESP32C61 || CONFIG_IDF_TARGET_ESP32C6
@@ -281,7 +283,14 @@ static int transport_uart_submit_tx(void *instance, const uint8_t *data, uint32_
     return -1;
   }
 
-  int written = uart_write_bytes(ctx->config.port, (const char *)data, len);
+  int written;
+  if (ctx->config.port == control_link_port()) {
+    /* The control plane shares UART0 with ESP_LOG, so its replies go through
+     * the one TX lock the log hook also takes (§2.2). */
+    written = control_link_write(data, len);
+  } else {
+    written = uart_write_bytes(ctx->config.port, (const char *)data, len);
+  }
   if (written < 0) {
     ESP_LOGE(TAG, "uart_write_bytes failed");
     return -1;

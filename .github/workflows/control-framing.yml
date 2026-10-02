@@ -1,0 +1,43 @@
+name: control framing
+
+# The CONTROL plane's host guard (issue #21, spec §2.2/§2.8/§2.10): the portable
+# COBS+CRC framing, the HELLO/STATUS dispatch and the bulk log rate policy are
+# asserted here without a board. The point of the suite is that a log flood costs
+# frames but never resets the link, which cannot be re-checked by eye on the
+# bench.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  control-framing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: C — CONTROL framing, dispatch and log policy
+        run: |
+          set -euo pipefail
+          cc -std=c11 -Wall -Wextra -Werror -Imain/include \
+            -o "$RUNNER_TEMP/test_control_framing" \
+            test/host/test_control_framing.c \
+            main/src/protocol/control/control_frame.c \
+            main/src/protocol/control/control_dispatch.c \
+            main/src/protocol/control/control_log.c
+          "$RUNNER_TEMP/test_control_framing"
+
+      - name: C — the same suite under ASan/UBSan
+        run: |
+          set -euo pipefail
+          cc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
+            -fno-omit-frame-pointer -Imain/include \
+            -o "$RUNNER_TEMP/test_control_framing_asan" \
+            test/host/test_control_framing.c \
+            main/src/protocol/control/control_frame.c \
+            main/src/protocol/control/control_dispatch.c \
+            main/src/protocol/control/control_log.c
+          "$RUNNER_TEMP/test_control_framing_asan"

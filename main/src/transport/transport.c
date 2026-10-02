@@ -24,15 +24,25 @@
 #include "protocol/easycon/easycon_instance.h"
 #endif
 
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+#include "protocol/control/control_parser.h"
+#endif
+
+#include "protocol/control/control_link.h"
+
 /*
- * Ring-buffer size rationale:
- * - Typical host reports are ~10 bytes (buttons + sticks).
- * - Host send latency is ~30 ms.
- * - The largest protocol frame is 16 bytes (Simple HID).
- * - At 115200 baud, ~1152 bytes can arrive in 100 ms of worst-case scheduler delay.
- * - 256 bytes provides enough headroom for >25 frames (~750 ms of backlog),
- *   easily covering normal task-scheduling jitter or short BLE interrupts,
- *   while saving ~75 % RAM compared with the legacy 1024-byte UART driver buffer.
+ * Ring-buffer size rationale (control-plane build):
+ * - The ring is 256 B on purpose. Spec §7.1/§7.5 keep it here and §2.7 depends
+ *   on it: at chunk_size = 256 one bulk chunk fills it and the device may ACK
+ *   every chunk, which is a permitted outcome rather than a protocol change.
+ *   A burst larger than the ring is data loss, not backpressure; whether the
+ *   256 B ring absorbs the ACK window is bench ticket #34, not a code guess.
+ * - The CONTROL decoder is streaming, so it never needs a whole 512-byte frame
+ *   contiguous (see control_parser.c).
+ * - For the legacy EasyCon path the original reasoning still applies: host
+ *   reports are ~10 bytes, the largest Simple HID frame is 16 bytes, and 256 B
+ *   covers >25 frames of jitter while saving RAM against a 1024-byte driver
+ *   buffer.
  */
 #define TRANSPORT_RX_BUF_SIZE   256
 #define TRANSPORT_TX_BUF_SIZE   256
@@ -86,7 +96,10 @@ int transport_init(void)
         return -1;
     }
 
-#ifdef CONFIG_PROTOCOL_LAYER_EASYCON
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+    control_parser_init();
+    g_protocol_inst = &control_protocol_instance;
+#elif defined(CONFIG_PROTOCOL_LAYER_EASYCON)
     g_protocol_inst = &easycon_protocol_instance;
 #else
     g_protocol_inst = NULL;
@@ -97,10 +110,10 @@ int transport_init(void)
     g_transport.ops = &transport_uart_vtable;
 
     transport_uart_config_t uart_cfg = {
-        .port           = UART_NUM_1,
-        .baud_rate      = 115200,
-        .rx_pin         = CONFIG_UART_RX_PIN,
-        .tx_pin         = CONFIG_UART_TX_PIN,
+        .port           = CONFIG_CONTROL_UART_PORT,
+        .baud_rate      = CONFIG_CONTROL_UART_BAUD,
+        .rx_pin         = CONFIG_CONTROL_UART_RX_PIN,
+        .tx_pin         = CONFIG_CONTROL_UART_TX_PIN,
         .rx_buffer_size = TRANSPORT_RX_BUF_SIZE,
         .tx_buffer_size = TRANSPORT_TX_BUF_SIZE,
         .notify_task    = NULL,
@@ -113,6 +126,16 @@ int transport_init(void)
 
     if (g_transport.ops->activate_rx(&g_transport, &g_transport_rx_ringbuf) != 0) {
         ESP_LOGE(LOG_TRANSPORT, "Failed to activate UART RX");
+        g_transport.ops->close(&g_transport);
+        return -1;
+    }
+
+    /* The shared TX lock and the ESP_LOG hook must be up before the protocol
+     * task can write a reply, because the control plane shares UART0 with the
+     * log (ADR-0001, §2.2). The driver is installed by now, so the hook has
+     * somewhere to write. */
+    if (control_link_init((int)uart_cfg.port) != 0) {
+        ESP_LOGE(LOG_TRANSPORT, "Failed to initialise the control link");
         g_transport.ops->close(&g_transport);
         return -1;
     }
