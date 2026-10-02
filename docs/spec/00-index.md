@@ -48,6 +48,7 @@ the result of a real trade-off. The spec assumes them; it does not restate them.
 | [0012](../adr/0012-key-material-is-a-read-only-mount.md) | Key material is a read-only mount, never written, never forwarded |
 | [0013](../adr/0013-firmware-owns-pairing.md) | The firmware owns pairing; the container observes |
 | [0014](../adr/0014-macos-bench-path.md) | The macOS bench path is OrbStack forwarding, and the host keeps the port |
+| [0015](../adr/0015-bulk-upload-is-a-windowed-stream.md) | Bulk upload is a windowed stream, exempt from "one outstanding request" |
 
 ## Vocabulary
 
@@ -88,8 +89,8 @@ and the storage/OTA partitions (unclaimed, §7.8).
 
 ## ADR selection
 
-**Seventeen candidates** were raised across the map (the seventeenth from #17, after the
-selection below was first written). They were judged against the bar — hard to
+**Eighteen candidates** were raised across the map (the seventeenth from #17, and the
+ eighteenth from #19, after the selection below was first written). They were judged against the bar — hard to
 reverse, surprising without context, the result of a real trade-off — and the three that did
 not clear all three were **declined rather than written as padding**. The record, because
 "why isn't there an ADR for X" is its own question later:
@@ -110,6 +111,7 @@ not clear all three were **declined rather than written as padding**. The record
 | Key material is a read-only mount, never written, never forwarded | #13 | **Accepted** — ADR-0012, *overriding #13's own judgement* (below) |
 | Firmware owns pairing (Q12) | map Q12 | **Accepted** — ADR-0013 |
 | The macOS bench path: OrbStack forwarding, with the host keeping the port | #17 | **Accepted** — ADR-0014. It clears the bar where #7's *port as configuration* did not: it has a rejected alternative with a real cost (a native venv, which would leave the container unexercised on the only bench host) and a surprising outcome (no WCH driver is needed, and `orb usb attach` is the wrong tool) |
+| Bulk upload is a windowed stream, exempt from one-outstanding | #19 | **Accepted** — ADR-0015. The byte-layout work found §2.3 and §2.7 disagreeing, and the resolution inverts a sentence a reader would otherwise take as universal (a mode verb is one request, one reply) for a real cost (256 round trips for the largest plan, against a 256-byte RX ring) |
 | Single-process container | #7 | **Declined** — the seam that matters is the module interface (§8.2), not a process boundary; splitting later changes no protocol and no interface. Not hard to reverse |
 | The port as configuration, with Q2's literal path as the default | #7 | **Declined** — one constant to change; a reader would not wonder why. It stays a chapter rule (§8.3) rather than a decision of record |
 | `esp32-joycontrol` is untrusted (Q13) | map Q13 | **Declined** — a sourcing rule, not an architectural choice. It lives in `docs/references.md` and ADR-0005 |
@@ -155,3 +157,27 @@ section number and adds only the consequence that belongs to its own subject —
 reciting a field's *values* rather than pointing at §3.2 is the drift this table exists to
 prevent. The worked traces (chapter 11) are deliberately an exception: they restate sequences
 on purpose, because a trace that only points is not a trace.
+
+## Amendment mechanics
+
+The spec is locked but not frozen: the build effort amends it, and this is how. The mechanics
+were settled by [Fix the exact frame byte layout (G-2) and how the locked spec absorbs
+it](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/19), before the
+first protocol line was written.
+
+1. **The owning chapter is edited in place.** The "where a change goes" table above is the
+   routing rule *and* the amendment rule: a framing fact is edited in §2, a status fact in §3,
+   the plan in §5, the tag in §6. **There is no second home for a changed fact** — no errata
+   page, no "wire format" chapter, no companion file the chapters point at. A fact that
+   appears twice will drift, and the copy in the owning chapter is the one that is true.
+2. **A byte-level fact is written as bytes**, in a table with offsets and endianness, in the
+   section that owns it — not as prose a reader has to turn into bytes. Where a layout spans
+   two chapters, each chapter carries its own half and the other cites the section number.
+3. **An amendment that supersedes a locked statement is a decision of record** when it is hard
+   to reverse, surprising without context, and the result of a real trade-off: it gets an ADR
+   as well as the in-place edit, and the ADR-selection table above gains its row. The first
+   application is the bulk ACK window, which inverted §2.3's "one outstanding request" for
+   bulk alone (§2.3, §2.7, ADR-0015).
+4. **A machine-checkable companion is expected where one is possible.** Bytes two
+   implementations must agree on are held together by the golden fixture of §5.7 (G-8); an
+   amendment that fixes such bytes without one is a promise, not a guarantee.

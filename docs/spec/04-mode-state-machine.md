@@ -108,7 +108,7 @@ The rule generalises, and it is worth more than the individual answer: **a mode 
 always caused by an explicit verb the container sent, or by a human at the BOOT button**
 (ADR-0007). Reasons:
 
-- **Implicit stop makes a 2 Hz poll lie.** With one outstanding request and no request ids,
+- **Implicit stop makes a 2 Hz poll lie.** With one outstanding control request and no request ids,
   the container can never distinguish "my `PLACE_AMIIBO` succeeded" from "my `PLACE_AMIIBO`
   silently killed the run I am watching". Events are edge-only.
 - **A verb must not have a hidden second effect.** `START` is not retransmitted because a

@@ -37,7 +37,7 @@ the state that matters (ADR-0003, ADR-0004, ADR-0011).
 | Between | container ↔ device | device ↔ NS2 |
 | Physical | USB serial, CH9102 bridge, `UART0` | BLE GATT |
 | Speed | 921600 baud recommended (unbenched; 115200 fallback) | 5 ms connection interval, measured |
-| Direction | container-led, one outstanding request | device is peripheral; the console drives |
+| Direction | container-led, one outstanding *control* request (bulk is a windowed stream, §2.3) | device is peripheral; the console drives |
 | Payloads | framed verbs, bulk upload, multiplexed `ESP_LOG` | Pro2 GATT command/notify + HID input report `0x09` |
 | Failure | device keeps running (ADR-0008) | device keeps running (ADR-0008) |
 
@@ -71,8 +71,8 @@ samples it every report.
 ## 1.5 What each half owes the other
 
 The device owes the container: a ten-verb interface it can drive with one outstanding
-request, a typed error on every rejection, a `STATUS` that never lies about the mode, and
-a neutral report on every exit path.
+control request, a typed error on every rejection, a `STATUS` that never lies about the mode,
+and a neutral report on every exit path.
 
 The container owes the device: a compiled plan that fits and validates, a fully sealed tag,
 a `HELLO` on every reconnect, and the discipline not to retransmit a verb that starts

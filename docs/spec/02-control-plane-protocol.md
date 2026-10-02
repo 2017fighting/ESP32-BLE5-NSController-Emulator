@@ -29,23 +29,60 @@ high rate. The `115200` seen in bring-up was that session's *log* baud, not a li
 | --- | --- | --- |
 | `ver` | u8 | protocol major version |
 | `type` | u8 | `REQUEST` (1) / `REPLY` (2) / `EVENT` (3) |
-| `verb` | u8 | one of the ten verbs (§2.4) |
+| `verb` | u8 | one of the ten verbs (§2.4); **0 on an `EVENT`** (§3.3) |
 | `len` | u16, little-endian | payload length in bytes, header excluded |
-| `crc` | u16, little-endian | CRC-16/CCITT-FALSE over `ver … payload` |
+| `crc` | u16, little-endian | CRC-16/CCITT-FALSE over header bytes 0–3 and the payload |
 | payload | `len` bytes | verb-specific |
+
+**The header's exact offsets.** The six header bytes are fixed, and the offsets are part of
+the protocol:
+
+| Offset | Width | Field |
+| --- | --- | --- |
+| 0 | u8 | `ver` |
+| 1 | u8 | `type` |
+| 2 | u8 | `verb` |
+| 3 | u16, little-endian | `len` |
+| 5 | u16, little-endian | `crc` |
+| 6 | `len` bytes | payload |
 
 *The CRC's exact polynomial and initial value are **a decision of record, not a discovery**:
 any CRC-16 both sides agree on would do. CCITT-FALSE is chosen because the device can compute
 it with `esp_rom_crc16_be` (`esp_rom_crc.h`: poly `0x1021`, init `0xffff`, refin/refout
-false, xorout `0`, i.e. `~crc16_be((uint16_t)~0xffff, buf, n)`), so the container does not
-guess and the firmware does not carry its own table (§12.3, G-2).*
+false, xorout `0`), so the container does not guess and the firmware does not carry its own
+table.*
 
-The frame is COBS-encoded and terminated by a single `0x00`. The header is fixed-width and
-the payload is the only variable part.
+**What the CRC covers, exactly.** It is CRC-16/CCITT-FALSE over **the first four header bytes
+followed by the payload** — `4 + len` bytes. The `crc` field itself is excluded (a field
+cannot cover itself), and so are the COBS encoding and the delimiters (the CRC is a property
+of the frame, not of its wire encoding). The device computes
+`~esp_rom_crc16_be((uint16_t)~0xffff, buf, 4 + len)` and the container computes
+`binascii.crc_hqx(buf, 0xFFFF)`; both are CCITT-FALSE, and both store the result in the
+little-endian `crc` field. That is the whole contract: no table on either side, and no other
+polynomial.
 
-**The CRC covers the header and the payload.** That is the only reading under which
-resynchronisation works as designed: a receiver scans forward for `0x00`, decodes, checks
-the CRC, and on failure advances to the **next** `0x00` and tries again.
+**The wire form of a frame.** A frame on the wire is
+
+```text
+0x00 · COBS(hdr ‖ payload) · 0x00
+```
+
+— a **mandatory** `0x00` before and after the COBS block, not merely a terminator after it.
+The leading delimiter is what makes a frame's first byte unambiguous: a CONTROL frame always
+begins with `0x00`, so a receiver sharing the byte stream with other parsers (§7.2) and with
+`ESP_LOG` can tell them apart from one byte, and "a partial frame is discarded" is the single
+rule *advance to the next `0x00`* rather than a special case for the first frame after attach.
+Two consecutive `0x00` bytes are an **empty segment and are ignored**, which is what makes the
+leading and trailing delimiters harmless when frames are sent back to back.
+
+COBS is the ordinary ≤ 254-byte-run variant: the encoded block contains no `0x00`, and runs of
+up to 254 non-zero bytes cost one overhead byte. The encoder never appends or prepends the
+delimiter; the framer adds both, outside the encoding. The header is fixed-width and the
+payload is the only variable part.
+
+**The CRC covers the header's first four bytes and the payload.** That is the only reading
+under which resynchronisation works as designed: a receiver scans forward for `0x00`, decodes,
+checks the CRC, and on failure advances to the **next** `0x00` and tries again.
 
 **Log lines are noise, by construction.** `ESP_LOG` text never contains a `0x00`, so a log
 line arrives as a chunk that fails the CRC and is discarded. **Resynchronisation never
@@ -57,16 +94,27 @@ one TX lock, and **device logging is suppressed to a bounded rate while a bulk t
 active** (chapter 7). This is the price of multiplexing, and it is a firmware requirement,
 not an optimisation.
 
-`max_frame` bounds what either side may send. It is advertised in `HELLO` (§2.6) and the
-device never exceeds it.
+`max_frame` bounds what either side may send: the **decoded** frame, header plus payload
+(`6 + len`), and its value is **512**. It is advertised in `HELLO` (§2.6) and the device never
+exceeds it. The largest frame either side sends is a `LOAD_PLAN` chunk — `6 + 5 + 256 = 267`
+bytes — so 512 leaves room without budgeting a larger buffer than §7.4 counts. A frame whose
+`6 + len` exceeds `max_frame` is `ERROR BAD_LENGTH` (§2.5): the header was readable, so it is
+an understood frame and not noise. A receiver caps its decode buffer at `max_frame` and
+resyncs if a block decodes past it (§2.8).
 
 ## 2.3 Conversations
 
-- **One outstanding request.** The container sends a `REQUEST` and waits for its `REPLY`
-  before sending another. There are **no request ids and no control-verb retransmission**.
-  Bulk data is the only thing retried, and it is addressed by offset, not by id.
+- **One outstanding *control* request.** The container sends a `REQUEST` and waits for its
+  `REPLY` before sending another. There are **no request ids and no control-verb
+  retransmission**. **Bulk upload is the one exception, and it is deliberate** (§2.7): a plan
+  or a tag is a *windowed stream* of chunk frames paced by offset-keyed ACKs, so the chunks in
+  one window are sent without a per-chunk reply. No other verb may be interleaved with a
+  transfer, so the session stays strictly ordered; what changes is the unit of waiting — one
+  **window**, not one frame. The trade-off, the rejected alternative, and the reason the
+  exemption is confined to bulk are **ADR-0015**.
 - **Every accepted request gets exactly one `REPLY` carrying the same `verb`**, with an
-  empty or verb-specific payload.
+  empty or verb-specific payload. For a bulk transfer the ACK is the reply, and there is one
+  per window rather than one per chunk (§2.7).
 - **Every rejection gets exactly one `REPLY` of type `REPLY`, verb `ERROR`**, carrying a
   typed code and detail (§2.5). A rejection never leaves state touched.
 - **`EVENT` is unsolicited**, carries no reply, and marks an edge, never a level.
@@ -88,6 +136,16 @@ device never exceeds it.
 | 8 | `PAIR_UNPAIR` | C→D | — | ACK / `ERROR` — a *request*; the firmware owns pairing (ADR-0013) |
 | 9 | `CONFIG` | C→D | `report_interval_ms`, `led` | ACK / `ERROR` |
 | 10 | `ERROR` | D→C | — | typed `code` + detail, on **every** rejection |
+
+### Verb and event numbering
+
+**The `#` column is the wire value of `verb`.** It is part of the protocol, not a reading
+aid: `HELLO` is 1, `LOAD_PLAN` 2, `START` 3, `STOP` 4, `STATUS` 5, `PLACE_AMIIBO` 6,
+`UNPLACE_AMIIBO` 7, `PAIR_UNPAIR` 8, `CONFIG` 9, `ERROR` 10. `ERROR` is the one verb whose
+direction is device→container, and it is always a `REPLY` — there is no `ERROR` request, and
+the container never sends verb 10. A verb outside 1–10 is `ERROR UNKNOWN_SUBCMD` (§2.5). The
+`verb` field of an `EVENT` frame is **0**, reserved (§3.3), so an event is never mistaken for
+a verb.
 
 ### Deliberately absent
 
@@ -124,6 +182,35 @@ chapter defines the verbs, chapter 4 defines when they are accepted.
 | `BAD_PLAN` | committed bytes failed the structural check | `LOAD_PLAN` |
 | `PLAN_TOO_LARGE` | the transfer exceeds `plan_capacity_bytes` | `LOAD_PLAN` |
 
+**The wire values.** The codes are numbered **1–9 in the order of the table above**:
+`VER_MISMATCH` 1, `UNKNOWN_TYPE` 2, `UNKNOWN_SUBCMD` 3, `BAD_LENGTH` 4, `BAD_STATE` 5,
+`NO_PLAN` 6, `ALREADY_RUNNING` 7, `BAD_PLAN` 8, `PLAN_TOO_LARGE` 9. Zero is `NONE` and is
+**`STATUS`-only** (§3.2): an `ERROR` reply never carries it. The set is closed, so these
+numbers are as fixed as the names.
+
+**The `ERROR` frame.** `ERROR` is a `REPLY` whose `verb` is 10 and whose payload is exactly
+five bytes:
+
+| Offset | Width | Field |
+| --- | --- | --- |
+| 0 | u8 | `code` (1–9) |
+| 1 | u32, little-endian | `detail` |
+
+`detail` is typed by the code, and **every code defines it** — a `detail` with no meaning
+would leave the closed code set half-specified:
+
+| Code | `detail` |
+| --- | --- |
+| `VER_MISMATCH` | the device's supported `proto_ver` |
+| `UNKNOWN_TYPE` | the offending `type` byte |
+| `UNKNOWN_SUBCMD` | the offending `verb` byte |
+| `BAD_LENGTH` | the offending `len` |
+| `BAD_STATE` | the current `mode` (§3.2) |
+| `PLAN_TOO_LARGE` | the offending `total_len` |
+| `NO_PLAN`, `ALREADY_RUNNING`, `BAD_PLAN` | 0 |
+
+The `ERROR_RAISED` event carries the identical `code`·`detail` pair (§3.3).
+
 Three notes that are decisions, not omissions:
 
 - **There is no `NO_TAG`.** `PLACE_AMIIBO` carries the tag bytes itself, so an absent
@@ -148,15 +235,29 @@ establishes the version. Everything else is strict.
 
 | Field | Width | Meaning |
 | --- | --- | --- |
-| `proto_ver` | u8 | protocol major the device speaks |
-| `fw_version` | u32 or 4×u8 | firmware identity |
+| `proto_ver` | u8 | protocol major the device speaks; 1 |
+| `fw_version` | 4×u8 | `major`, `minor`, `patch`, `build`, in that order |
 | `boot_id` | u32 | fresh on every power cycle (§2.8) |
-| `vid` / `pid` | u16 each | as reported by the USB stack |
-| `max_frame` | u16 | largest frame either side may send |
+| `max_frame` | u16 | largest frame either side may send; 512 |
 | `chunk_size` | u16 | bulk chunk payload size; 256 |
-| `plan_capacity_bytes` | u32 | plan bytes the device will accept; the device allocates exactly the announced transfer size |
+| `plan_capacity_bytes` | u32 | plan bytes the device will accept; the device allocates exactly the announced transfer size; 65536 |
 | `plan_slots` | u8 | 1 |
-| `features` | u16 bitfield | `macro` / `amiibo` / `config`; the only extensibility mechanism |
+| `features` | u16 bitfield | `macro` (bit 0) / `amiibo` (bit 1) / `config` (bit 2); bits 3–15 reserved 0 |
+
+**The reply's payload, in order:** `proto_ver`(1) · `fw_version`(4) · `boot_id`(4) ·
+`max_frame`(2) · `chunk_size`(2) · `plan_capacity_bytes`(4) · `plan_slots`(1) ·
+`features`(2) = **20 bytes**, every multi-byte field little-endian. **The request's payload
+is one byte**: `proto_ver` u8.
+
+**There is no `vid`/`pid` field, and its removal was deliberate.** The control link is UART0
+through the CH9102 — a separate chip whose USB descriptors the ESP32-S3 cannot read — and the
+native OTG port is deliberately unused (ADR-0001). A field nothing on this link can produce
+is worse than an absent one, because it invites a container to key on a constant. The "is the
+right firmware behind this port?" question this section exists to answer is answered by
+`fw_version`; "a different device" is answered by `boot_id` plus `features`.
+
+**`fw_version` is four bytes and not a `u32`,** so the UI renders `major.minor.patch` without
+unpacking a bitfield, and `build` stays free for a monotonic per-flash counter.
 
 - **`features` is how this design stays degradable.** A new verb appears as a bit, so an
   older container disables the control instead of erroring on it. The container reads
@@ -166,7 +267,7 @@ establishes the version. Everything else is strict.
   renders it invites conclusions the number cannot support.
 - **`fw_version` exists for a concrete reason.** This exact board previously ran a different
   firmware with its own command shell; "is the right firmware behind this port?" needs an
-  answer that neither VID/PID nor luck provides.
+  answer that neither the port name nor luck provides.
 
 ## 2.7 Bulk upload
 
@@ -177,8 +278,9 @@ establishes the version. Everything else is strict.
 2. It sends **chunks of `chunk_size` (256) bytes**, each frame carrying **the offset it
    writes to** and the bytes.
 3. The device replies with a **windowed ACK carrying the next expected offset** — not one
-   ACK per chunk. One ACK per ~4 KB keeps a 140 KB upload to ~35 round trips instead of
-   ~547.
+   ACK per chunk. One ACK per ~4 KB keeps a 64 KiB upload to ~16 round trips instead of
+   ~256. Bulk is the one exception to §2.3's one-outstanding rule, and **ADR-0015** records
+   why.
 4. **An ACK means the bytes are written to device RAM**, not buffered. The device has a
    256-byte RX ring at a 100 Hz tick and no TX ring or TX task; it cannot absorb a burst.
 5. The container **resumes at the ACK'd offset**. Resume is free, because the previous ACK
@@ -195,21 +297,76 @@ device resets the RX ring through the existing `zc_reset(tp->rx_buffer)`
 (`main/src/transport/transport_usb_cdc.c:118`) and aborts staging on the same event. An
 in-flight upload dies by construction.
 
-*Field-level detail this chapter fixes.* The chunk frame carries `offset` (u32,
-little-endian) followed by the bytes; the announce frame carries `total_len` (u32) and,
-for a plan, the 16-byte plan hash; the commit frame carries `total_len` and the same hash.
-These packings are decisions of record, and a **checked-in golden fixture** — a plan built
-from a real macro, with its exact bytes and hash — is what keeps the two implementations
-from drifting (chapter 12, G-8).
+**The three bulk frames, exactly.** Every bulk frame's payload begins with a one-byte `op`:
+`1` announce, `2` chunk, `3` commit. `0` is reserved. All multi-byte fields are
+little-endian.
+
+| Frame | `op` | Payload after `op` | `len` |
+| --- | --- | --- | --- |
+| `LOAD_PLAN` announce | 1 | `total_len` u32 · `plan_hash` 16 B | 21 |
+| `LOAD_PLAN` chunk | 2 | `offset` u32 · `chunk` bytes | 5 + n, n ≤ 256 |
+| `LOAD_PLAN` commit | 3 | `total_len` u32 · `plan_hash` 16 B | 21 |
+| `PLACE_AMIIBO` announce | 1 | `total_len` u32 (= 540) | 5 |
+| `PLACE_AMIIBO` chunk | 2 | `offset` u32 · `chunk` bytes | 5 + n, n ≤ 256 |
+| `PLACE_AMIIBO` commit | 3 | `total_len` u32 (= 540) | 5 |
+| bulk ACK (`REPLY`) | — | `next_expected_offset` u32 | 4 |
+
+**A tag carries no hash.** Its identity is inside the 540 bytes and the container is what
+keys on it (ADR-0011), so `PLACE_AMIIBO`'s announce and commit are sixteen bytes shorter than
+a plan's. The frame's `verb` already says which transfer is being announced, so no extra
+discriminator is needed.
+
+`next_expected_offset` is the byte offset the device will write next: after a chunk at
+`offset` of `n` bytes it is `offset + n`, and after a commit it is `total_len`. Zero after an
+announce means "start at zero". The container resumes **from the ACK'd offset**, so a retry
+needs no request id and no byte count it did not already have.
+
+**The ACK window is 4096 bytes.** The device ACKs once it has consumed at least 4096 bytes
+since its last ACK, and it **may ACK earlier, at any time**, because it must never overrun:
+the RX ring is 256 bytes (§7.1, §7.5), so at `chunk_size = 256` one chunk fills it and the
+device may ACK every chunk under load. That is a permitted outcome, not a protocol change,
+and the container must never depend on an ACK arriving only at a window boundary. The
+container keeps **at most one window of un-ACKed chunk bytes in flight** and sends no other
+verb for the life of the transfer; it does not need to know the ring size, only that one
+window is the slowest the ACK can come. The window is a constant of this section rather than
+a `HELLO` field — `chunk_size` is already advertised, so validation 2 (§12.2) is answered by
+changing this constant on both sides. Retry is at **window granularity**: resend from
+`next_expected_offset`.
+
+A **checked-in golden fixture** — a plan built from a real macro, with its exact frame bytes
+and hash — is what keeps the two implementations from drifting (chapter 12, G-8).
 
 ## 2.8 Versioning, unknown frames and recovery
 
-- **One 8-bit major protocol version, set at `HELLO`.** A mismatch is `VER_MISMATCH`
-  carrying the device's supported version — **never** a silent drop, which would deadlock
-  the one frame that establishes the version.
+- **One 8-bit major protocol version, set at `HELLO`.** It is carried twice — the frame
+  header's `ver` and the `HELLO` payload's `proto_ver` — and both must be 1. A mismatch is
+  `VER_MISMATCH` carrying the device's supported version in `detail` — **never** a silent
+  drop, which would deadlock the one frame that establishes the version. The header's `ver`
+  is checked on every frame before the payload is interpreted, which is safe because the
+  header layout is fixed across versions: the version exists so a *stale* build announces
+  itself.
+- **The container sends `HELLO` first on every attach and every reconnect, and nothing
+  before it.** The device does **not require** it: there is no version gate on the other
+  verbs, because one container and one board are flashed together and a gate would turn a
+  forgotten `HELLO` into a capability error. It is the container's fixed convention and the
+  only source of `features` and the advertised limits.
+- **Tolerant parsing is `HELLO`'s alone, and it is exactly this much.** Any
+  `REQUEST`/`HELLO` frame is accepted whatever its declared length: `len = 0` is a version
+  probe and is answered with the capabilities reply; `len ≥ 1` is compared against the
+  device's version, a match answered with the capabilities reply and a mismatch with
+  `ERROR VER_MISMATCH`; bytes past the first are ignored. The link stays up in every case.
+  Every other verb is parsed strictly.
 - **An unknown frame type or verb gets a typed `ERROR` and the link stays up.** Container
   and device drift by definition, and resetting turns "one bad verb" into "the board is
-  gone". A known type with an unexpected length is `BAD_LENGTH`, same treatment.
+  gone". A known verb with an unexpected length is `BAD_LENGTH`, and so is a frame whose
+  `6 + len` exceeds `max_frame`; same treatment.
+- **A frame the receiver cannot trust produces no `ERROR` at all.** A CRC failure, a COBS
+  block that does not decode, or a COBS block that decodes past `max_frame` is discarded
+  silently and the receiver advances to the next `0x00` (§2.2) — it cannot name a code for
+  bytes it did not understand, and §2.5 reserves errors for frames that arrived intact. For
+  the same reason a `REPLY` or an `EVENT` arriving **at the device** is discarded silently:
+  it is well-framed, but it is not a request the device can be asked to answer, and calling
+  it `UNKNOWN_TYPE` would be false.
 - **No forward-compatibility promise.** One container, one board, flashed together. The
   version exists so a *stale* build announces itself, not so two versions interoperate.
 - **Recovery is container-led `HELLO` plus `boot_id`.** The container sends `HELLO` on
@@ -227,6 +384,11 @@ cycle reboots this board on roughly half of slow cycles (chapter 9, `ns2-console
 §5.3). A recovery path that treats a reboot as exceptional will be wrong in normal use.
 
 ## 2.9 `CONFIG`
+
+**The payload is exactly three bytes**: `report_interval_ms` u16, `led` u8 (0 or 1), both
+little-endian. **Both fields are always present** — there is no presence mask — because the
+container re-sends the whole setting on reconnect anyway and a mask would be a third way to
+say something both sides already know. The reply is empty.
 
 `CONFIG` carries `report_interval_ms` and `led`. Both are **volatile** — never persisted in
 NVS — and both apply at the **next safe boundary**:
@@ -256,3 +418,29 @@ and already decided in the firmware's `ns2_codec.c`.
   setting: 152 B of log per report against 11,520 B/s caps it at 75.8/s, and 74.4/s was
   observed — 98% of that ceiling. Any latency figure from a DEBUG run is a logging floor.
   Logging must be at `INFO` or lower for any timing measurement.
+
+## 2.10 The frame catalogue, in decode order
+
+The sections above own every fact here. This is the order to decode in, so an implementation
+does not have to reassemble the layout from prose, and the pointer is the authority wherever a
+byte's meaning is owned elsewhere.
+
+1. **Scan** to the next `0x00`. The bytes up to it are one COBS block; an empty block (two
+   consecutive delimiters) is skipped.
+2. **Decode COBS**, bounded by `max_frame`; a block that decodes past it is unreadable.
+3. **Read the header**: `ver`(u8), `type`(u8), `verb`(u8), `len`(le16), `crc`(le16) (§2.2).
+4. **Check the length and version**: the block must be exactly `6 + len` bytes, and
+   `6 + len ≤ max_frame` and `ver = 1`. A mismatch on `len` or `max_frame` is
+   `ERROR BAD_LENGTH`; a bad `ver` is `ERROR VER_MISMATCH`.
+5. **Check the CRC** over bytes 0–3 ‖ payload. On failure, discard silently and resync (§2.2,
+   §2.8).
+6. **Dispatch on `type`**: 1 `REQUEST`, 2 `REPLY`, 3 `EVENT`; anything else is
+   `ERROR UNKNOWN_TYPE`.
+7. **For a `REQUEST`**, dispatch on `verb` 1–10 (§2.4) with the payload layouts of §2.5–§2.9;
+   `verb` outside 1–10 is `ERROR UNKNOWN_SUBCMD`.
+8. **For an `EVENT`**, `verb` is 0 and the payload begins with the `kind` byte (§3.3).
+9. **For a `REPLY`**, `verb` echoes the request's; `verb` 10 is `ERROR` and verbs 2 and 6
+   carry the bulk ACK's `next_expected_offset` (§2.7).
+
+The one thing a reader may look for and not find: **`ERROR` is a `REPLY`, never a request.**
+It shares the verb numbering so a decode table has one column, while §2.4 fixes its direction.

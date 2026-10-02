@@ -14,25 +14,34 @@ event survivable, and it is why events carry almost no payload.
 
 ## 3.2 `STATUS` fields
 
-Little-endian. `len` covers the whole payload; a container that sees a shorter payload than
-it expects must treat it as `BAD_LENGTH`, never pads.
+Little-endian, packed, no padding. The payload is **exactly 47 bytes** — a fixed length, not a
+variable one — and the offsets below are part of the protocol. `len` covers the whole
+payload; a container that sees anything other than 47 bytes must surface a protocol error,
+never pad.
 
-| Field | Width | Values |
-| --- | --- | --- |
-| `console_link` | u8 | `ADVERTISING` (0) / `CONNECTED` (1) — this is what an earlier resolution called "connect/pair state", and it is the **console** link, never the control link (§3.3) |
-| `bond` | u8 | `UNPAIRED` (0) / `PAIRED` (1) |
-| `mode` | u8 | `IDLE` (0) / `MACRO` (1) / `AMIIBO` (2) |
-| `plan_state` | u8 | `NONE` (0) / `COMMITTED` (1) |
-| `plan_hash` | 16 B | the hash the device was given at commit; zero when `plan_state = NONE` |
-| `plan_frame_count` | u16 | `record_count` of the committed plan; 0 when none |
-| `current_frame` | u16 | 0-based index of the frame being replayed; 0 when not in `MACRO` |
-| `loop_count` | u32 | completed loops since `START` |
-| `tag_state` | u8 | `NONE` (0) / `PLACED` (1) |
-| `tag_identity` | 7 B | the identity of the placed tag; zero when `tag_state = NONE` |
-| `console_polling` | u8 | `IDLE` (0) / `POLLING` (1) / `TAG_DETECTED` (2) |
-| `last_error` | u8 + detail | a code from §2.5, or `NONE` (0); cleared by the next successful verb |
-| `last_stop_reason` | u8 | `NONE` (0) / `CONTAINER_STOP` (1) / `BOOT_LOCAL` (2) |
-| `uptime_ms` | u32 | since boot; **not** a host-visible date |
+| Offset | Width | Field | Values |
+| --- | --- | --- | --- |
+| 0 | u8 | `console_link` | `ADVERTISING` (0) / `CONNECTED` (1) — this is what an earlier resolution called "connect/pair state", and it is the **console** link, never the control link (§3.3) |
+| 1 | u8 | `bond` | `UNPAIRED` (0) / `PAIRED` (1) |
+| 2 | u8 | `mode` | `IDLE` (0) / `MACRO` (1) / `AMIIBO` (2) |
+| 3 | u8 | `plan_state` | `NONE` (0) / `COMMITTED` (1) |
+| 4 | 16 B | `plan_hash` | the hash the device was given at commit; zero when `plan_state = NONE` |
+| 20 | u16 | `plan_frame_count` | `record_count` of the committed plan; 0 when none |
+| 22 | u16 | `current_frame` | 0-based index of the frame being replayed; 0 when not in `MACRO` |
+| 24 | u32 | `loop_count` | completed loops since `START` |
+| 28 | u8 | `tag_state` | `NONE` (0) / `PLACED` (1) |
+| 29 | 7 B | `tag_identity` | the identity of the placed tag; zero when `tag_state = NONE` |
+| 36 | u8 | `console_polling` | `IDLE` (0) / `POLLING` (1) / `TAG_DETECTED` (2) |
+| 37 | u8 | `last_error.code` | a code from §2.5, or `NONE` (0); cleared by the next successful verb |
+| 38 | u32 | `last_error.detail` | the per-code meaning of §2.5; 0 when `last_error.code = NONE` |
+| 42 | u8 | `last_stop_reason` | `NONE` (0) / `CONTAINER_STOP` (1) / `BOOT_LOCAL` (2) |
+| 43 | u32 | `uptime_ms` | since boot; **not** a host-visible date |
+
+**`last_error` is always five bytes** — `code` then `detail` — because a variable-length
+field in the frame the container parses twice a second would buy nothing and would
+reintroduce the length question this section already answers. The pair carries the same
+per-code meaning as an `ERROR` reply (§2.5), so a stop reason and an error code are read the
+same way from `STATUS` as from the wire.
 
 ### Notes that are decisions
 
@@ -43,7 +52,9 @@ it expects must treat it as `BAD_LENGTH`, never pads.
   hash. Zero is a legal hash prefix.
 - **`last_error` is cleared by the next successful verb**, not by a read. A user who fixes
   the macro and starts it successfully should stop seeing the old error, and no extra verb
-  is needed to achieve that.
+  is needed to achieve that. It is a **five-byte pair** — `code` u8 then `detail` u32, with
+  `detail` typed by the code (§2.5) — so the field is a fixed-width part of the 47-byte
+  payload rather than a variable-length tail.
 - **`console_polling` is what the container keys rotation on.** When it falls from `POLLING`
   or `TAG_DETECTED` to `IDLE`, the console has stopped asking; that is the moment to push
   the next identity (chapter 6, §6.5).
@@ -59,20 +70,30 @@ cannot rotate an identity it cannot see is placed — so `tag_state`, `tag_ident
 ## 3.3 `EVENT`
 
 An `EVENT` frame carries one `kind` byte and an optional small payload. The set is closed
-and short:
+and short.
 
-| Kind | Fires when | Payload |
-| --- | --- | --- |
-| `MODE_CHANGED` | the mode field changes, for any reason | new mode |
-| `PLAN_COMMITTED` | a `LOAD_PLAN` commits | plan hash |
-| `PLAN_DISCARDED` | a long panic stop, or a `PLACE_AMIIBO` transition, drops the plan | — |
-| `LOOP_COMPLETED` | a loop boundary is crossed (rate-limited, below) | loop count |
-| `TAG_PLACED` | a `PLACE_AMIIBO` commits and the tag starts answering | identity |
-| `TAG_UNPLACED` | a tag stops answering, including the atomic-replace gap | — |
-| `SCAN_ENDED` | the console stops polling a placed tag | — |
-| `ERROR_RAISED` | an `ERROR` reply was sent for a reason other than the container's last request | code |
-| `CONSOLE_LINK` | the console link connects, disconnects, or re-subscribes | which, plus the disconnect reason |
-| `BOOT` | the device has finished booting and is ready for `HELLO` | `boot_id` |
+**The event frame.** An `EVENT` is a frame of type 3 whose `verb` is **0** — reserved, not one
+of the ten (§2.4) — and whose payload begins with one `kind` byte. The kinds are numbered
+**1–10 in the order of the table below**, and the event's own payload follows the `kind`
+byte:
+
+| Kind | # | Fires when | Payload after `kind` |
+| --- | --- | --- | --- |
+| `MODE_CHANGED` | 1 | the mode field changes, for any reason | `mode` u8 |
+| `PLAN_COMMITTED` | 2 | a `LOAD_PLAN` commits | `plan_hash` 16 B |
+| `PLAN_DISCARDED` | 3 | a long panic stop, or a `PLACE_AMIIBO` transition, drops the plan | — |
+| `LOOP_COMPLETED` | 4 | a loop boundary is crossed (rate-limited, below) | `loop_count` u32 |
+| `TAG_PLACED` | 5 | a `PLACE_AMIIBO` commits and the tag starts answering | `tag_identity` 7 B |
+| `TAG_UNPLACED` | 6 | a tag stops answering, including the atomic-replace gap | — |
+| `SCAN_ENDED` | 7 | the console stops polling a placed tag | — |
+| `ERROR_RAISED` | 8 | an `ERROR` reply was sent for a reason other than the container's last request | `code` u8 · `detail` u32 (§2.5) |
+| `CONSOLE_LINK` | 9 | the console link connects, disconnects, or re-subscribes | `which` u8 (0 `DISCONNECTED`, 1 `CONNECTED`, 2 `RESUBSCRIBED`) · `reason` u16 (0 unless `which = DISCONNECTED`) |
+| `BOOT` | 10 | the device has finished booting and is ready for `HELLO` | `boot_id` u32 |
+
+**`CONSOLE_LINK`'s `reason` is a `u16`, not a `u8`, and that is measured rather than
+chosen.** The only disconnect this hardware produces is 531 = `BLE_HS_ERR_HCI_BASE (0x200) +
+0x13` (`ns2-console-lifecycle.md` §5.1), which does not fit a byte; the host-level reason space
+starts at 0x200, so the field must be 16 bits or the one value that matters is unrepresentable.
 
 ### Two corrections to earlier thinking, recorded here
 
@@ -98,9 +119,12 @@ A macro may be short enough to complete many loops per second, and a linked-list
 `LOOP_COMPLETED` events would then saturate the control link — the very thing ADR-0003
 exists to avoid. Therefore:
 
-> **`LOOP_COMPLETED` is emitted at most at the `STATUS` poll rate.** If a loop boundary is
-> crossed while the previous `LOOP_COMPLETED` has not yet been superseded by a poll, the
-> device suppresses the event. `loop_count` in `STATUS` remains exact.
+> **`LOOP_COMPLETED` is emitted at most at the `STATUS` poll rate.** A device cannot know the
+> container's poll rate, so the rule is stated in the one thing it can observe: **the device
+> emits `LOOP_COMPLETED` only if `loop_count` has advanced since the last `STATUS` reply it
+> served.** If a loop boundary is crossed while the previous `LOOP_COMPLETED` has not been
+> superseded by a poll, the device suppresses the event. `loop_count` in `STATUS` remains
+> exact.
 
 Every other event kind marks a genuine, sparse edge and needs no limiting.
 

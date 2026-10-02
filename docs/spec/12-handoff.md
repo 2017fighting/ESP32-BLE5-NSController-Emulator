@@ -10,9 +10,12 @@ them can be settled before any code is written.
 
 **Stage 0 — settle the two protocol unknowns on paper (no hardware, no firmware).**
 
-1. **Fix the exact frame byte layout** for `HELLO`, the bulk announce/chunk/commit frames, and
-   `STATUS` (§2.6, §2.7, §3.2). The chapters give every field, its width and its endianness,
-   but not a byte diagram; two implementations built from prose will differ.
+1. ~~**Fix the exact frame byte layout** for `HELLO`, the bulk announce/chunk/commit frames,
+   and `STATUS` (§2.6, §2.7, §3.2). The chapters give every field, its width and its
+   endianness, but not a byte diagram; two implementations built from prose will differ.~~
+   **Done.** The layout is bytes in the owning sections — §2.2 (framing and the CRC), §2.4–§2.6
+   (verbs, `ERROR`, `HELLO`), §2.7 (bulk), §2.8–§2.10, §3.2 (`STATUS`) and §3.3 (`EVENT`) —
+   and the amendment mechanics are §00's "Amendment mechanics".
 2. **Build the golden fixture** (§5.7, G-8): one real macro → exact plan hex → SHA-256, checked
    in and asserted by both a Python test and a host-side C test. This is the single highest-value
    artifact in the whole effort, because it is what catches container/firmware drift without a
@@ -68,7 +71,7 @@ inference, or a decision to leave something unowned.
 | # | Gap | Where | Consequence if wrong |
 | --- | --- | --- | --- |
 | **G-1** | **921600 baud is a recommendation, not a measurement.** The CH9102 supports it and Linux's `cdc_acm` should drive it, but the board has never been run that fast with logs multiplexed | §2.1, §10.5 | fall back to 115200; nothing else changes |
-| **G-2** | **The exact frame byte layout is fixed in prose, not in a table.** Field widths and endianness are given, a byte diagram is not (§2.4, §2.6, §2.7, §3.2) | §2, §3 | two implementations diverge; stage 0 exists to close this before code |
+| **G-2** | **Closed.** The exact frame byte layout was fixed in prose and no byte diagram; it is now a byte table in the owning sections (§2.2, §2.4–§2.10, §3.2, §3.3). Retired by [Fix the exact frame byte layout (G-2) and how the locked spec absorbs it](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/19) — the first gap closed rather than carried | §2, §3 | — |
 | **G-3** | **The ~10 MB `storage` partition is unowned**, and `ota_1` is unused because OTA is out of scope | §7.8 | 13 MB of a 16 MB module sits idle; if nothing claims either, drop them |
 | **G-4** | **Is a macro run harmless against an absent console?** Unobservable — the base firmware has no `MACRO` mode | §9.4 | the container allows it and warns; a wrong answer is a console-side surprise, not corruption |
 | **G-5** | **Is the console content with a pass resumed mid-press after a link drop?** Unobservable for the same reason | §4.7, §9.4 | the container stops the run on a console drop, so the gap cannot bite |
@@ -98,8 +101,10 @@ Ranked, with the cost of being wrong:
    macro convincingly, `CONFIG_FREERTOS_HZ` must rise — which is a firmware change that touches
    the plan executor's timing base and nothing in the protocol (holds are milliseconds,
    ADR-0009, precisely so this stays cheap).
-4. **The frame layout** (G-2). Cheap *only* if stage 0 is done; expensive if two implementations
-   are built from prose.
+4. **~~The frame layout~~** (G-2) — **retired.** Stage 0 fixed the bytes in §2 and §3 (§00's
+   "Amendment mechanics"), so there is no longer a risk of two prose-built implementations.
+   The lesson it demonstrated is the reason stage 0 existed: settle the layout on paper, or pay
+   for it twice.
 5. **The storage/OTA reservation** (G-3). Trivially reversible.
 6. **The reboot rate** (G-7). Does not invalidate anything; only the container's error-wording
    budget.

@@ -26,9 +26,10 @@ web (aiohttp)         routes + SSE + static
   │  DeviceApi: status(), load_plan(hash, bytes), start(), stop(),
   │             place(tag), unplace(), pair_unpair(), config(**kw)
   ▼
-device (session)      owns the port; one outstanding request; STATUS @2 Hz;
+device (session)      owns the port; one outstanding control request; STATUS @2 Hz;
   │                   EVENT on edges; recovery on boot_id
-  │  FrameIO: request(verb, payload) -> reply | error ;  events() -> async iterator
+  │  FrameIO: request(verb, payload) -> reply | error ;  bulk(hash|tag) -> windowed ACK stream ;
+  │           events() -> async iterator
   ▼
 serial (transport)    COBS + CRC framing, log demux, resync on CRC failure
 
@@ -38,8 +39,10 @@ compile               pure: (macro JSON) -> plan bytes + 16-byte hash  (chapter 
 
 Three properties the shape enforces rather than encourages:
 
-- **One outstanding request** lives in the `device` interface. Retrying `START` is a second
-  start, so there is no retry loop to add by accident — the interface has nowhere to put one.
+- **One outstanding control request** lives in the `device` interface, and **bulk is the one
+exception** — a plan or a tag is a windowed stream paced by offset-keyed ACKs (§2.7,
+ADR-0015). Retrying `START` is a second start, so there is no retry loop to add by accident —
+the interface has nowhere to put one.
 - **Sealing is a pure function** with no device and no HTTP access, so key bytes never reach
   the framing layer or a request handler (ADR-0012).
 - **The browser never talks to the device.** The web module converts device truth into UI
