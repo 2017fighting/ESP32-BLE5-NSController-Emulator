@@ -351,6 +351,25 @@ rejected, are **ADR-0015**.
 A **checked-in golden fixture** — a plan built from a real macro, with its exact frame bytes
 and hash — is what keeps the two implementations from drifting (chapter 12, G-8).
 
+**Bulk frames the device cannot place.** The sequence above is what a correct container
+sends; a frame outside it is still answered — never a silent no-op (§2.5) — and every answer
+is a code from the closed table. The `op` byte lives inside a verb's payload, so §2.5's code
+set has no name for a bad discriminator; the routing below was settled with the §7.3 step-3
+implementation (issue #22) and is amended here, in the chapter that owns the bulk path:
+
+| Frame | Condition | Answer |
+| --- | --- | --- |
+| any bulk | `op` is not 1/2/3 | `ERROR BAD_LENGTH`; `detail` is the frame's `len` |
+| chunk, commit | no transfer is open, or the verb does not match the open one | `ERROR BAD_STATE`; `detail` is the current `mode` |
+| announce (`PLACE_AMIIBO`) | `total_len != 540` | `ERROR BAD_LENGTH`; `detail` is `total_len` |
+| chunk | `offset + n > total_len` | `ERROR BAD_LENGTH`; `detail` is the frame's `len` |
+| chunk | `offset != next_expected_offset` | a bulk ACK carrying `next_expected_offset`, and **no write** — resume is offset-keyed (rule 5) |
+| commit | the final offset, the re-sent `total_len`, or the re-sent `plan_hash` disagrees | a plan: `ERROR BAD_PLAN` (`detail` 0). A tag: `ERROR BAD_LENGTH`, `detail` = `total_len` |
+
+`BAD_STATE`'s "illegal in the current mode" is read here over the whole state of §4.1,
+staging included; `detail` stays the `mode` byte §2.5 fixes, because that is the only state
+field the wire carries.
+
 ## 2.8 Versioning, unknown frames and recovery
 
 - **One 8-bit major protocol version, set at `HELLO`.** It is carried twice — the frame

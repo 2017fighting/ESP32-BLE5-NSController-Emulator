@@ -46,15 +46,16 @@ extern "C" {
 #define CONTROL_PLAN_CAPACITY_BYTES 65536u
 #define CONTROL_PLAN_SLOTS 1u
 
-/* §2.6 `features` bits. The bit is gated on the *verb* surface, not on the
- * physical half: #22 lands every verb (the macro executor of #24 and the tag
- * server of #25 are firmware changes with no protocol surface, per §12.1), so
- * the honest advertisement is all three. */
+/* §2.6 `features` bits. A bit is a promise the build can honour end to end, and
+ * the physical halves of all three — the executor (#24), the tag server (#25)
+ * and the applied-CONFIG boundary (#23) — are `control_effects_t` no-ops on this
+ * build, so the honest advertisement is "nothing yet". #23-#25 flip the bits as
+ * their effects land, one line each. */
 #define CONTROL_FEATURES_NONE 0x0000u
 #define CONTROL_FEATURE_MACRO 0x0001u
 #define CONTROL_FEATURE_AMIIBO 0x0002u
 #define CONTROL_FEATURE_CONFIG 0x0004u
-#define CONTROL_FEATURES (CONTROL_FEATURE_MACRO | CONTROL_FEATURE_AMIIBO | CONTROL_FEATURE_CONFIG)
+#define CONTROL_FEATURES CONTROL_FEATURES_NONE
 
 /* §2.6 `fw_version` is 4x u8 major.minor.patch.build. `build` is free for a
  * monotonic per-flash counter later. */

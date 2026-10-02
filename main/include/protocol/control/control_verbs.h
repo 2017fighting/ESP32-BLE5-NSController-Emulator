@@ -28,7 +28,7 @@
 extern "C" {
 #endif
 
-/* §6.2: a tag is the raw NTAG215 dump — 135 pages x 4 B. */
+/* §6.2: a tag is the raw 540-byte NTAG215 image — 135 pages x 4 B. */
 #define CONTROL_TAG_SIZE 540u
 
 /* §2.7: the ACK window. The device ACKs once it has consumed this many bytes
@@ -118,6 +118,13 @@ typedef struct {
     uint8_t tag[CONTROL_TAG_SIZE];
     uint8_t tag_identity[7]; /* the UID, §6.1/§6.3 */
 
+    /* §2.9 CONFIG is volatile and applies at the next loop boundary in `MACRO`,
+     * and at once in `IDLE`/`AMIIBO`. A value accepted during `MACRO` is held
+     * here, unapplied, until the executor crosses a boundary. */
+    uint16_t config_report_interval_ms;
+    uint8_t config_led;
+    bool config_pending;
+
     control_effects_t fx;
 } control_state_t;
 
@@ -158,6 +165,13 @@ size_t control_ack(control_state_t *st, uint8_t verb, const uint8_t *payload, si
 /* Clears `STATUS.last_error`. A bulk chunk inside an ACK window is accepted
  * without a reply, so it clears the pair without going through control_ack(). */
 void control_clear_error(control_state_t *st);
+
+/*
+ * §2.9: applies a CONFIG that was deferred because `MACRO` was running. The
+ * executor (#24) calls this at the loop boundary; a no-op when nothing is
+ * pending. `IDLE`/`AMIIBO` never leave anything pending — they apply at once.
+ */
+void control_config_apply_at_boundary(control_state_t *st);
 
 #ifdef __cplusplus
 }

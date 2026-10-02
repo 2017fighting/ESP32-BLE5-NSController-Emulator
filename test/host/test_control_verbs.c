@@ -487,14 +487,27 @@ static void test_config(void)
     uint8_t p[3] = {0x14, 0x00, 0x01}; /* 20 ms, led on */
     harness_request(&h, CONTROL_VERB_CONFIG, p, sizeof(p));
     CHECK(h.errors == 0 && h.config_calls == 1 && h.last_config_ms == 20 && h.last_config_led == 1,
-          "CONFIG must deliver report_interval_ms le16 and led");
+          "CONFIG in IDLE must apply immediately: report_interval_ms le16 and led");
+    CHECK(!h.ctl.config_pending, "an immediate CONFIG must leave nothing pending");
 
-    /* Always legal: accepted in MACRO too (§4.3). */
+    /* §2.9: in MACRO it is accepted (always legal, §4.3) but applied at the next
+     * loop boundary, not on the spot. */
     h.ctl.status.mode = CONTROL_MODE_MACRO;
     uint8_t q[3] = {0x0A, 0x00, 0x00};
     harness_request(&h, CONTROL_VERB_CONFIG, q, sizeof(q));
-    CHECK(h.errors == 0 && h.config_calls == 2 && h.last_config_ms == 10 && h.last_config_led == 0,
-          "CONFIG must be accepted in MACRO");
+    CHECK(h.errors == 0 && h.config_calls == 1 && h.ctl.config_pending,
+          "CONFIG in MACRO must be accepted and deferred, not applied mid-macro");
+    control_config_apply_at_boundary(&h.ctl);
+    CHECK(h.config_calls == 2 && h.last_config_ms == 10 && h.last_config_led == 0 &&
+              !h.ctl.config_pending,
+          "the loop boundary must apply the deferred CONFIG exactly once");
+    control_config_apply_at_boundary(&h.ctl);
+    CHECK(h.config_calls == 2, "applying at the boundary twice must not re-apply");
+
+    /* AMIIBO applies at once too (§2.9). */
+    h.ctl.status.mode = CONTROL_MODE_AMIIBO;
+    harness_request(&h, CONTROL_VERB_CONFIG, p, sizeof(p));
+    CHECK(h.config_calls == 3 && !h.ctl.config_pending, "CONFIG in AMIIBO must apply immediately");
 
     harness_request(&h, CONTROL_VERB_CONFIG, p, 2);
     CHECK(h.errors == 1 && h.err_code == CONTROL_ERR_BAD_LENGTH && h.err_detail == 2,
@@ -730,6 +743,11 @@ static void test_last_error_bookkeeping(void)
     uint8_t storage[CONTROL_WIRE_MAX];
     CHECK(read_status(&h, &f, storage, sizeof(storage)) == 0 && f.payload[37] == CONTROL_ERR_NO_PLAN,
           "STATUS.last_error.code must be at offset 37");
+    CHECK(h.ctl.status.last_error_code == CONTROL_ERR_NO_PLAN,
+          "a STATUS read must not clear last_error (§3.2)");
+    harness_request(&h, CONTROL_VERB_STATUS, NULL, 0);
+    CHECK(h.ctl.status.last_error_code == CONTROL_ERR_NO_PLAN,
+          "a second 2 Hz poll must not clear it either");
 
     /* The next successful verb clears it, not a read (§3.2). */
     harness_request(&h, CONTROL_VERB_PAIR_UNPAIR, NULL, 0);

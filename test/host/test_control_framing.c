@@ -381,7 +381,7 @@ static void test_hello_payload_layout(void)
     CHECK(out[17] == 1, "HELLO.plan_slots at 17");
     CHECK(out[18] == (uint8_t)(CONTROL_FEATURES & 0xFFu) &&
               out[19] == (uint8_t)(CONTROL_FEATURES >> 8),
-          "HELLO.features must advertise the landed verbs (#22)");
+          "HELLO.features must match what this build can honour");
 }
 
 /* A block longer than max_frame is untrusted and must be silent (§2.8): it must

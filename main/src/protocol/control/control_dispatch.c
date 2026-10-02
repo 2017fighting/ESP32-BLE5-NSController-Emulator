@@ -191,7 +191,10 @@ static size_t reply_status(control_state_t *st, const control_frame_t *frame, ui
     if (n == 0) {
         return 0;
     }
-    return control_ack(st, CONTROL_VERB_STATUS, payload, n, out, out_cap);
+    /* §3.2: `last_error` is cleared by the next successful *verb*, not by a read
+     * — and STATUS is the read. Clearing it here would make the 2 Hz poll erase
+     * the very error the poll is reporting. */
+    return control_encode(CONTROL_TYPE_REPLY, CONTROL_VERB_STATUS, payload, n, out, out_cap);
 }
 
 /* ------------------------------------------------------------------- verbs */
@@ -306,10 +309,31 @@ static size_t reply_config(control_state_t *st, const control_frame_t *frame, ui
     }
     uint16_t report_interval_ms = rd_le16(frame->payload);
     uint8_t led = frame->payload[2];
-    if (st->fx.apply_config != NULL) {
-        st->fx.apply_config(st->fx.ctx, report_interval_ms, led);
+    st->config_report_interval_ms = report_interval_ms;
+    st->config_led = led;
+    if (st->status.mode == CONTROL_MODE_MACRO) {
+        /* A report-interval change mid-macro would perturb the one thing ADR-0003
+         * says is consistent, so it waits for the loop boundary and the executor
+         * calls control_config_apply_at_boundary(). */
+        st->config_pending = true;
+    } else {
+        st->config_pending = false;
+        if (st->fx.apply_config != NULL) {
+            st->fx.apply_config(st->fx.ctx, report_interval_ms, led);
+        }
     }
     return control_ack(st, CONTROL_VERB_CONFIG, NULL, 0, out, out_cap);
+}
+
+void control_config_apply_at_boundary(control_state_t *st)
+{
+    if (st == NULL || !st->config_pending) {
+        return;
+    }
+    st->config_pending = false;
+    if (st->fx.apply_config != NULL) {
+        st->fx.apply_config(st->fx.ctx, st->config_report_interval_ms, st->config_led);
+    }
 }
 
 /* ---------------------------------------------------------------- dispatch */
