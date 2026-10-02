@@ -96,3 +96,7 @@ Desktop.ini
 # This repo tracks files under scripts/. A global [Ss]cripts exclude
 # (~/.config/git/ignore) would otherwise hide new ones from git status.
 !scripts/
+
+# Likewise the global venv excludes carry an [Ii]nclude rule, which matches
+# main/include/ and would hide a new firmware header (e.g. protocol/plan.h).
+!main/include/

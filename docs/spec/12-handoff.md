@@ -16,10 +16,14 @@ them can be settled before any code is written.
    **Done.** The layout is bytes in the owning sections — §2.2 (framing and the CRC), §2.4–§2.6
    (verbs, `ERROR`, `HELLO`), §2.7 (bulk), §2.8–§2.10, §3.2 (`STATUS`) and §3.3 (`EVENT`) —
    and the amendment mechanics are §00's "Amendment mechanics".
-2. **Build the golden fixture** (§5.7, G-8): one real macro → exact plan hex → SHA-256, checked
+2. ~~**Build the golden fixture** (§5.7, G-8): one real macro → exact plan hex → SHA-256, checked
    in and asserted by both a Python test and a host-side C test. This is the single highest-value
    artifact in the whole effort, because it is what catches container/firmware drift without a
-   board.
+   board.~~
+   **Done.** The fixture is `fixtures/plan/` (`correction.json` → `correction.plan.hex` →
+   `correction.sha256`, the four rows of §5.7 reproducing exactly); the compiler and plan cache
+   are `container/ns2plan/`; the firmware layout, with the G-13 `static_assert`s, is
+   `main/include/protocol/plan.h`; and `.github/workflows/plan-fixture.yml` runs both sides.
 
 **Stage 1 — bring the control plane up, with no modes.**
 
@@ -77,12 +81,12 @@ inference, or a decision to leave something unowned.
 | **G-5** | **Is the console content with a pass resumed mid-press after a link drop?** Unobservable for the same reason | §4.7, §9.4 | the container stops the run on a console drop, so the gap cannot bite |
 | **G-6** | **Two amiibo facts are NS1 inferences, not NS2 measurements:** that freshness keys on the UID, and that an observable unplace is required. The console never enters `.nfp` on this firmware, so neither is confirmed *or* falsified | §6.5, §9.4 | the feasibility branch; the design emits the gap anyway, which is the safe superset |
 | **G-7** | **The 8/19 reboot rate is a DEBUG-build figure.** The structural stack fragility generalises; the rate does not | §9.2 | the rate drops on a release build; nothing in the design depends on it |
-| **G-8** | **No golden fixture exists yet.** §5.7's worked example is a number in a document, not a checked-in test vector | §5.7, §10.6 | stage 0 closes it, and it is the highest-value item there |
+| **G-8** | **Closed.** The fixture exists at `fixtures/plan/`, asserted by both the Python compiler test and the host-side C test, and CI runs both. Retired by [Macro compiler, plan cache and the golden fixture (G-8, G-13)](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/20) — the second gap closed rather than carried | §5.7 | — |
 | **G-9** | **The NTAG215 region map exists in two coordinate systems** (tag-image vs internal/decrypted), and the sealing routine's library uses its own for the plaintext cache | §6.3 | a wrong index in the sealing module; nothing in the protocol depends on it, and the fixture-plus-library comparison catches it |
 | **G-10** | **`scripts/package_firmware.py` fails with exit 0** and ships an `n8` name for a 16 MB module | §10.1 | use `package_firmware_v5.py`; the broken script should be deleted or fixed |
 | **G-11** | **Two firmware defects the design tolerates rather than fixes:** the `gap.c` timer-stack overflow (~half of sleep/wake cycles) and the `gap.c` `ble_gap_update_params` `EINVAL` on every connection | §7.6, §9.2 | both belong to whoever owns `gap.c`; the second is harmless, the first is why `boot_id` recovery is normal operation |
 | **G-12** | **The PN7160 identification-response difference** (`61 12 50 10` in firmware vs `61 12 50 0d` documented) is unresolved as to whether it matters | `ns2-amiibo-path.md` §2 Q6 | both register successfully with the console; it is cosmetic until proven otherwise |
-| **G-13** | **`static_assert`s on the plan header/record sizes and the magic are a design intention, not code** | §5.3, §5.7 | stage 0/2 adds them; without them a struct drift is silent |
+| **G-13** | **Closed.** `main/include/protocol/plan.h` carries the `static_assert`s on the header and record sizes, the field offsets and the magic; the host-side C test compiles it. Retired by the same ticket as G-8 | §5.3, §5.7 | — |
 | **G-14** | **The `0x01/0x0C` response asymmetry** (`0x91`→`0x01` rewritten for this subcommand, not for `0x02/0x04`) is unexplained, and it touches both the NFC probe and calibration | §7.3 step 8 | pulling it into the NFC work as an explicit decision rather than an inherited line |
 | **G-15** | **Player slot / multi-controller behaviour is untested upstream** and is probably a non-goal — but it has not been *ruled* out | map fog | nothing in the protocol depends on it; a second board is a second container, and the console is the thing that would have to accept one |
 | **G-16** | **Does the 5 ms link hold under macro load?** The link itself is measured (§9.1); the load question needs a `MACRO` mode to generate traffic | §9.4 | the plan executor's report cadence is the thing to check (validation 3), and ADR-0009 keeps a fix cheap |

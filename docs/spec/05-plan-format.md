@@ -135,11 +135,13 @@ the hash it sent and surfaces a mismatch rather than rendering a run as current.
 The layout is frozen here, the firmware `static_assert`s the header and record sizes and
 asserts the magic, and a **checked-in golden fixture** — one real macro, its exact plan hex,
 and its SHA-256 — is asserted by both the container's compiler test and a host-side C test.
-The fixture, not a generated header, is what catches container/firmware drift (known gap
-G-8: it does not exist yet).
+The fixture lives at `fixtures/plan/` (`correction.json` → `correction.plan.hex` →
+`correction.sha256`) and both sides run in `.github/workflows/plan-fixture.yml`, so the
+drift is caught without a board. The fixture, not a generated header, is what catches
+container/firmware drift (G-8: **closed**).
 
-**Worked example** (the compiler's own reference run, macro `纠错宏.json`; 88 events → 71
-records, `loop_ms = 26205`, 793 B):
+**Worked example** (the compiler's own reference run, macro `纠错宏.json`, checked in as the
+fixture's `correction.json`; 88 events → 71 records, `loop_ms = 26205`, 793 B):
 
 ```text
 header  4e53504c 01 0b 4700 5d660000
@@ -148,9 +150,11 @@ SHA-256 of the full payload:
         1f0a90d3ccabcb198cd236afc4c7572658505bd4ecc429974aff15354661fdfa
 ```
 
-**The real library, compiled** — this is the acceptance range, not a prediction:
+**The real library, compiled** — this is the acceptance range, not a prediction. The identity
+carried on the wire is 16 **bytes** (§5.6, ADR-0010); the last column prints its first 16
+hex characters, which is what the four rows list.
 
-| Macro | Events | Records | `loop_ms` | Plan B | `SHA-256[:16]` |
+| Macro | Events | Records | `loop_ms` | Plan B | `SHA-256` (first 16 hex) |
 | --- | --- | --- | --- | --- | --- |
 | 天妇罗巢穴宏1 | 243 | 243 | 115321 | 2685 | `9c3aabab06ca2d9f` |
 | 天妇罗巢穴风扇 | 243 | 243 | 115321 | 2685 | `140336da0735aac2` |

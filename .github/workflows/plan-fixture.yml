@@ -1,0 +1,49 @@
+name: plan fixture
+
+# Stage 0's drift guard (issue #20, spec §5.7): the Python compiler and the
+# host-side C layout test both assert the same frozen fixture. This is what
+# catches container/firmware drift without a board, so it runs on every push.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  plan-fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Materialise the pinned reference macro library
+        run: |
+          set -euo pipefail
+          pin=202e512206ab955361aa40e8e2a2735cbe142175
+          dir="$RUNNER_TEMP/reference/switch-controller-macro"
+          mkdir -p "$dir"
+          git -C "$dir" init -q
+          git -C "$dir" remote add origin \
+            https://github.com/Orangeeeeeeeeeeeeeeeeee/switch-controller-macro
+          git -C "$dir" fetch -q --depth 1 --filter=blob:none origin "$pin"
+          git -C "$dir" checkout -q FETCH_HEAD
+          echo "REFERENCE_ROOT=$RUNNER_TEMP/reference" >> "$GITHUB_ENV"
+
+      - name: Python — compiler, cache and golden fixture
+        run: python3 -m unittest discover -s container/tests -p 'test_*.py' -v
+
+      - name: C — host-side plan fixture and struct static_asserts
+        run: |
+          set -euo pipefail
+          cc -std=c11 -Wall -Wextra -Werror -Imain/include \
+            -o "$RUNNER_TEMP/test_plan_fixture" test/host/test_plan_fixture.c
+          "$RUNNER_TEMP/test_plan_fixture" fixtures/plan
+          # A deliberately flipped byte must fail both sides; prove the C guard
+          # is not vacuous, not just that it passes on the good fixture.
+          "$RUNNER_TEMP/test_plan_fixture" fixtures/plan --selftest
+          "$RUNNER_TEMP/test_plan_fixture" fixtures/plan --flip 50
