@@ -103,9 +103,11 @@ not an optimisation.
 (`7 + len`), and its value is **512**. It is advertised in `HELLO` (§2.6) and the device never
 exceeds it. The largest frame either side sends is a `LOAD_PLAN` chunk — `7 + 5 + 256 = 268`
 bytes — so 512 leaves room without budgeting a larger buffer than §7.4 counts. A frame whose
-`7 + len` exceeds `max_frame` is `ERROR BAD_LENGTH` (§2.5): the header was readable, so it is
-an understood frame and not noise. A receiver caps its decode buffer at `max_frame` and
-resyncs if a block decodes past it (§2.8).
+`7 + len` exceeds `max_frame` decodes past the receiver's `max_frame` buffer, so its CRC
+cannot be computed over the whole `5 + len` bytes and the frame cannot be validated: it is
+discarded silently and the receiver resyncs to the next `0x00`, exactly as §2.8 requires of
+any block it cannot trust. The header being "readable" is not enough to name a code — the
+receiver never read the payload the CRC covers.
 
 ## 2.3 Conversations
 
@@ -370,9 +372,10 @@ and hash — is what keeps the two implementations from drifting (chapter 12, G-
   `ERROR VER_MISMATCH`; bytes past the first are ignored. The link stays up in every case.
   Every other verb is parsed strictly.
 - **An unknown frame type or verb gets a typed `ERROR` and the link stays up.** Container
-  and device drift by definition, and resetting turns "one bad verb" into "the board is
-  gone". A known verb with an unexpected length is `BAD_LENGTH`, and so is a frame whose
-  `7 + len` exceeds `max_frame`; same treatment.
+  and device drift by definition, and resetting turns "one bad verb" into "the device is
+  gone". A known verb whose *payload* length is wrong is `BAD_LENGTH`. A frame whose
+  `7 + len` exceeds `max_frame` is **not** named: it decodes past the receiver's buffer, so
+  its CRC cannot be checked and it is discarded silently under the next rule.
 - **A frame the receiver cannot trust produces no `ERROR` at all.** A CRC failure, a COBS
   block that does not decode, or a COBS block that decodes past `max_frame` is discarded
   silently and the receiver advances to the next `0x00` (§2.2) — it cannot name a code for
@@ -442,11 +445,15 @@ byte's meaning is owned elsewhere.
    consecutive delimiters) is skipped.
 2. **Decode COBS**, bounded by `max_frame`; a block that decodes past it is unreadable.
 3. **Read the header**: `ver`(u8), `type`(u8), `verb`(u8), `len`(le16), `crc`(le16) (§2.2).
-4. **Check the length and version**: the block must be exactly `7 + len` bytes, and
-   `7 + len ≤ max_frame` and `ver = 1`. A mismatch on `len` or `max_frame` is
-   `ERROR BAD_LENGTH`; a bad `ver` is `ERROR VER_MISMATCH`.
+4. **Locate the frame's extent**: the block must be exactly `7 + len` bytes, which is what
+   fixes the CRC's input. A block that is not exactly `7 + len` bytes, that decodes past
+   `max_frame`, or whose COBS decode fails is discarded silently and the receiver resyncs
+   (§2.2, §2.8) — its `len` cannot be trusted and its CRC cannot be computed.
 5. **Check the CRC** over bytes 0–4 ‖ payload. On failure, discard silently and resync (§2.2,
-   §2.8).
+   §2.8). **The CRC is the trust gate**: `ver`, `type` and `verb` are interpreted only once it
+   passes, so a log line that happens to decode to seven plausible bytes can never draw an
+   `ERROR`. A CRC-valid frame with `ver ≠ 1` is `ERROR VER_MISMATCH`; a known verb whose
+   *payload* length is wrong (a non-empty `STATUS`) is `ERROR BAD_LENGTH` (§2.5).
 6. **Dispatch on `type`**: 1 `REQUEST`, 2 `REPLY`, 3 `EVENT`; anything else is
    `ERROR UNKNOWN_TYPE`.
 7. **For a `REQUEST`**, dispatch on `verb` 1–10 (§2.4) with the payload layouts of §2.5–§2.9;

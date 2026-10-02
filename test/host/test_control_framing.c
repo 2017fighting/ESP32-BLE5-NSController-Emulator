@@ -2,7 +2,7 @@
  * Host-side assertions for the CONTROL framing and the HELLO/STATUS dispatch
  * (spec §2.2, §2.5, §2.6, §2.8, §2.10, §3.2; issue #21).
  *
- * No ESP-IDF, no board. This is what makes "a log flood costs frames but never
+ * No ESP-IDF, no device. This is what makes "a log flood costs frames but never
  * resets the link" a property asserted in CI rather than a hope for the bench.
  *
  * Build:
@@ -545,6 +545,34 @@ static void test_hello_payload_layout(void)
     CHECK(out[18] == 0x00 && out[19] == 0x00, "HELLO.features = 0 in stage 1");
 }
 
+/* A block longer than max_frame is untrusted and must be silent (§2.8): it must
+ * not be able to forge a `len` and draw an ERROR. */
+static void test_oversize_block_is_silent(void)
+{
+    harness_t h;
+    harness_init(&h);
+    uint8_t stream[1024];
+    size_t at = 0;
+
+    stream[at++] = 0x00;
+    for (int i = 0; i < 700; i++) {
+        stream[at++] = (uint8_t)((i % 250) + 1); /* nonzero: one over-long COBS block */
+    }
+    stream[at++] = 0x00;
+
+    uint8_t status[CONTROL_WIRE_MAX];
+    size_t sn = control_encode(CONTROL_TYPE_REQUEST, CONTROL_VERB_STATUS, NULL, 0, status,
+                               sizeof(status));
+    memcpy(&stream[at], status, sn);
+    at += sn;
+
+    harness_feed(&h, stream, at);
+    CHECK(h.replies == 1 && h.tx_verb == CONTROL_VERB_STATUS,
+          "an over-long block must be silent and the next frame recovered");
+    CHECK(h.errors == 0, "an over-long block must not draw an ERROR");
+    CHECK(control_decoder_silent_drops(&h.dec) >= 1, "the over-long block must count as a silent drop");
+}
+
 /* ------------------------------------------------------------ random resync */
 
 static uint32_t rnd_state = 0x12345678u;
@@ -647,6 +675,7 @@ int main(void)
     test_error_reply_shape();
     test_max_frame_bounds();
     test_hello_payload_layout();
+    test_oversize_block_is_silent();
     test_random_noise_resync();
     test_log_rate_policy();
 

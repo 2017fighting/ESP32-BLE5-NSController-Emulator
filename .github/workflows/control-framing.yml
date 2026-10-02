@@ -2,7 +2,7 @@ name: control framing
 
 # The CONTROL plane's host guard (issue #21, spec §2.2/§2.8/§2.10): the portable
 # COBS+CRC framing, the HELLO/STATUS dispatch and the bulk log rate policy are
-# asserted here without a board. The point of the suite is that a log flood costs
+# asserted here without the device. The point of the suite is that a log flood costs
 # frames but never resets the link, which cannot be re-checked by eye on the
 # bench.
 

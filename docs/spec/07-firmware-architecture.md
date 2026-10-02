@@ -94,7 +94,7 @@ Nothing in this list needs a new transport, a new radio, or a filesystem.
 | Plan replay structure | the committed buffer itself (no copy) | until discarded or superseded |
 | Tag buffer | 540 B | until unplaced-and-discarded or replaced |
 | HID report front/back buffers | 63 B each | process lifetime |
-| Control-layer frame buffers | `max_frame` for RX + TX | process lifetime |
+| Control-layer frame buffers | decoded `max_frame` (512 B) plus the COBS block and encoded wire form, up to `max_frame + max_frame/254 + 3` ≈ 517 B per direction (§2.2) | process lifetime |
 | NFC chunk buffer | one `0x15` response, ~75 B | process lifetime |
 
 **`plan_slots = 1`, so the worst single allocation is 64 KiB**, and it fits internal SRAM

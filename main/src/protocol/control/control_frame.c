@@ -175,15 +175,12 @@ static control_dec_result_t decode_block(control_decoder_t *dec)
     size_t n = 0;
     int rc = control_cobs_decode(dec->block, dec->block_len, dec->frame, CONTROL_MAX_FRAME, &n);
     if (rc == CONTROL_COBS_OVERFLOW) {
-        /* Decoded past max_frame. The header is readable, so an over-long frame
-         * is `BAD_LENGTH` (§2.10); an under-length len with trailing bytes is
-         * simply unreadable. */
-        if (n >= 5) {
-            uint16_t len = rd_le16(&dec->frame[3]);
-            if ((size_t)CONTROL_HEADER_SIZE + len > CONTROL_MAX_FRAME) {
-                return reject(dec, CONTROL_ERR_BAD_LENGTH, len);
-            }
-        }
+        /* Decoded past max_frame. Its CRC cannot be computed over the whole
+         * 5 + len bytes, so the block is untrusted and silent, exactly as §2.8
+         * requires of a block that "decodes past max_frame": a >512-byte noise
+         * run must not be able to forge a `len` and draw a reply. This is why
+         * §2.2/§2.10 no longer name BAD_LENGTH for an over-long frame — the
+         * receiver never read the payload the CRC covers. */
         dec->n_drops++;
         return CONTROL_DEC_IN_PROGRESS;
     }
