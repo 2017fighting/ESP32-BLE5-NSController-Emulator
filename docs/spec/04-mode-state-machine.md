@@ -53,6 +53,7 @@ because what matters at a transition is that the reason *changed*, not how it is
 | --- | --- | --- | --- | --- |
 | `IDLE` | `LOAD_PLAN` (transfer + check ok) | `IDLE` | plan committed | ACK |
 | `IDLE` | `START`, plan committed | **`MACRO`** | arm at frame 0; neutral first; ACK once armed | ACK |
+| `IDLE` | `START`, committed plan the device cannot replay | `IDLE` | — | `ERROR BAD_PLAN` |
 | `IDLE` | `START`, no committed plan | `IDLE` | — | `ERROR NO_PLAN` |
 | `IDLE` | `PLACE_AMIIBO` (transfer + commit ok) | **`AMIIBO`** | tag committed and placed; the NFC state byte starts answering console polling | ACK |
 | `IDLE` | `STOP` | `IDLE` | — | ACK (idempotent) |
@@ -78,6 +79,15 @@ because what matters at a transition is that the reason *changed*, not how it is
 chunked, windowed, atomic path as a plan, so there is no load-without-place verb and no
 `NO_TAG` state error. A failed transfer is `BAD_LENGTH` or a CRC rejection; a missing key is
 refused by the **container** before anything reaches the wire (§8.6).
+
+**`START` can still refuse after the commit check passed (added by #24).** `plan_state` is
+committed, so the wire says a plan is there — but "is it committed?" and "can this device walk
+it?" are different questions, and the second is the executor's. The case is a plan that is
+structurally valid yet unrunnable, reachable only by a hand-built `record_count = 0` transfer:
+§5.3's check accepts `len == 12` and §5.5's compiler never emits one. The arm refuses it with
+`BAD_PLAN` **before the mode moves**, so the container never sees a `MACRO` whose walk is not
+running. That is §2.3's "a rejection leaves state untouched" applied to the one callback that
+can say no.
 
 **Always legal, no mode change:**
 
@@ -176,19 +186,47 @@ plan is discarded only by the long press.
 
 The device owns this completely, independently of the plan. A fixed neutral report is
 emitted from a **compiled-in template, never derived from plan bytes**, on *every* exit
-path: the loop boundary, `STOP`, the BOOT stop, a mode change, the console re-subscribe
-re-arm, and the executor fault path (malformed plan, frame index out of range, commit check
-mismatch). It must be **committed and transmitted**, not merely written into the back buffer
-(`controller_hid_commit`, `main/src/controller/hid_controller.c:233`).
+path: `START` ("neutral first", §4.3), the loop boundary, `STOP`, the BOOT stop, a mode
+change, the console re-subscribe re-arm, and the executor fault path (malformed plan, frame
+index out of range, commit check mismatch). It must be **committed and transmitted**, not
+merely written into the back buffer (`controller_hid_commit`,
+`main/src/controller/hid_controller.c:233`).
 
-The template already exists: `pro2_report_init` (`main/src/controller/hid_controller_pro2.c:61`)
-zeroes the button bytes, centres both sticks at `PRO2_STICK_CENTER` (`0x800`), and pins byte
-`0x0C` to `0x00`. That makes the guarantee **total and stronger than the reference player's**:
-`web_ui.py::_release_all` enumerates 18 named buttons and predates Pro2's `GR`/`GL`/`C`,
-whereas a zeroed Pro2 button field cannot miss one.
+The template is `pro2_neutral_state` (`main/src/controller/hid_controller_pro2.c`), the nine
+state bytes in the report's own layout: it zeroes the button bytes, centres both sticks at
+`PRO2_STICK_CENTER` (`0x800`), and leaves byte `0x0C` at `0x00`. `pro2_report_init` initialises
+the report from the same nine bytes, so the neutral the executor emits and the neutral a fresh
+controller carries are one definition rather than two that agree today. That makes the guarantee
+**total and stronger than the reference player's**: `web_ui.py::_release_all` enumerates 18
+named buttons and predates Pro2's `GR`/`GL`/`C`, whereas a zeroed Pro2 button field cannot miss
+one.
 
 Logically the transition is atomic (`mode=IDLE` the moment `STOP` is accepted or the BOOT
 edge is read); physically it completes within one report interval.
+
+**The handoff, and why "no inter-loop gap" survives it (amended by #24).** The reporter's
+double buffer carries a single `swap_request` bit (`hid_controller.c`), so writing neutral
+and then the loop's first record back to back loses the neutral: the reporter swaps once and
+only the record reaches the wire. The executor therefore has an explicit handoff step. At the
+loop boundary it commits the neutral, then waits for `swap_request` to clear — the reporter
+has taken that commit — or for a 50 ms bound, and only then writes record 0. The bound exists
+so an absent console, whose report task never reaches the swap, cannot stall a replay; §4.6's
+"committed and transmitted" is what makes the wait necessary, and the bound is what makes it
+safe.
+
+**This is the transmission cost of the neutral, not a scheduled gap.** §5.4's "no inter-loop
+gap" names what the wait is not: there is no dwell, no sleep, and no frame the design holds
+for its own sake. The loop's clock is **free-running from the arm**: the first loop starts at
+the moment record 0 is applied (the ACK'd start, §4.3), and every later boundary's deadline is
+the previous one plus exactly `loop_ms` — so `sum(hold_ms) == loop_ms` still holds exactly of
+the loop's own timeline, and tick quantisation moves *when a boundary is observed* but never
+*how long a loop lasts*.
+
+**Anchoring each loop to the moment its record 0 lands would be the drift §7.5 warns about.**
+That is the tempting reading of "the clock starts when record 0 is applied", and it is wrong:
+it re-anchors to the 10 ms tick grid every loop, so a 25 ms loop becomes 30 ms and 600 ms of
+clock yields 20 boundaries instead of 24. "Starts when record 0 is applied" is about the
+**first** loop — the one begun by an ACK'd `START` — not about every restart.
 
 **This is the confirmation chapter 5 depends on: the compiler must not inject trailing
 neutral frames.** A release that lives in the data can be omitted by a malformed plan, and

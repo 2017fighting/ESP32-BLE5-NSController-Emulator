@@ -40,11 +40,23 @@ typedef struct {
     void (*set_button_custom)(controller_hid_report_t *report, uint8_t *data, size_t len);
     void (*set_left_stick)(controller_hid_report_t *report, uint16_t x, uint16_t y);
     void (*set_right_stick)(controller_hid_report_t *report, uint16_t x, uint16_t y);
+    /* The plan executor's one write (§5.3, #24): the 9 state bytes of a plan
+     * record — buttons[3] ‖ left[3] ‖ right[3] — placed contiguously into the
+     * report. One op rather than three setters because the record's layout *is*
+     * the report's layout, and splitting it would invite the two to drift. */
+    void (*set_state)(controller_hid_report_t *report, const uint8_t state[9]);
     uint8_t* (*next_report)(controller_hid_report_t *report);
     size_t (*report_size)(void);
 } controller_hid_ops_t;
 
 // Controller management operations
+//
+// `commit_idle` is how a caller asks "has the reporter consumed the last commit?"
+// without reaching into `controller_handle.buffer` itself. The plan executor needs
+// it to honour §4.6 (the neutral must be *transmitted*, not merely written into the
+// back buffer) while keeping §5.4's loop timing, and the double buffer's single
+// `swap_request` bit is the only observable proof. It is a read, so it never blocks
+// the report task.
 typedef struct {
     const char *name;
     int  (*init)(controller_handle_t *ctrl, controller_type_t type);
@@ -54,6 +66,7 @@ typedef struct {
     controller_hid_report_t* (*get_back_buffer)(controller_handle_t *ctrl);
     void (*hid_commit)(controller_handle_t *ctrl);
     void (*hid_reset)(controller_handle_t *ctrl);
+    bool (*commit_idle)(controller_handle_t *ctrl);
 } controller_ops_t;
 
 struct controller_handle {

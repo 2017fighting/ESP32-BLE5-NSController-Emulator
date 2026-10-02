@@ -1,6 +1,8 @@
 #include "controller/hid_controller.h"
 #include "controller/hid_controller_pro2.h"
 
+#include <string.h>
+
 #include "esp_log.h"
 
 const uint8_t pro2_firmware_info[12] = {
@@ -58,6 +60,15 @@ static void pro2_set_right_stick(controller_hid_report_t *report, uint16_t x, ui
   pack_stick_data(hid_report->right_stick, x, y);
 }
 
+/* §4.6's neutral state, in the report's own layout. `pro2_report_init` and the
+ * plan executor's neutral share this one definition, so the release the mode
+ * guarantees and the report the controller is initialised with cannot drift. */
+const uint8_t pro2_neutral_state[9] = {
+    0x00, 0x00, 0x00, /* buttons: every Pro2 button bit clear */
+    0x00, 0x08, 0x80, /* left stick centred at PRO2_STICK_CENTER */
+    0x00, 0x08, 0x80, /* right stick centred */
+};
+
 static void pro2_report_init(controller_hid_report_t *report) {
   if (report == NULL) return;
 
@@ -76,8 +87,17 @@ static void pro2_report_init(controller_hid_report_t *report) {
   hid_report->unknown_0x0c = 0x00;
   hid_report->headset_flag = 0x00;
   hid_report->motion_data_len = 0x28;
-  pro2_set_left_stick(report, PRO2_STICK_CENTER, PRO2_STICK_CENTER);
-  pro2_set_right_stick(report, PRO2_STICK_CENTER, PRO2_STICK_CENTER);
+  /* One memcpy, from the same nine bytes the executor writes (§5.3): the state
+   * bytes are contiguous in the report, at 0x02. */
+  memcpy(&hid_report->buttons, pro2_neutral_state, sizeof(pro2_neutral_state));
+}
+
+/* The plan executor's write (#24). Nine bytes from a plan record straight into
+ * the report; the field offsets are `static_assert`ed in the header. */
+static void pro2_set_state(controller_hid_report_t *report, const uint8_t state[9]) {
+  if (report == NULL || report->report == NULL || state == NULL) return;
+  hid_report_pro2_t *hid_report = (hid_report_pro2_t *)report->report;
+  memcpy(&hid_report->buttons, state, 9);
 }
 
 static void pro2_set_button_custom(controller_hid_report_t *report, uint8_t *data, size_t len) {
@@ -104,6 +124,7 @@ controller_hid_ops_t controller_pro2_ops = {
   .set_left_stick = pro2_set_left_stick,
   .set_right_stick = pro2_set_right_stick,
   .set_button_custom = pro2_set_button_custom,
+  .set_state = pro2_set_state,
   .next_report = pro2_next_report,
   .report_size = pro2_report_size,
 };

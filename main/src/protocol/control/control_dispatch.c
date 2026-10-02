@@ -17,25 +17,6 @@
 #include "protocol/control/control_events.h"
 #include "protocol/control/control_mode.h"
 
-static uint16_t rd_le16(const uint8_t *p)
-{
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
-
-static void wr_le16(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)(v & 0xFFu);
-    p[1] = (uint8_t)((v >> 8) & 0xFFu);
-}
-
-static void wr_le32(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)(v & 0xFFu);
-    p[1] = (uint8_t)((v >> 8) & 0xFFu);
-    p[2] = (uint8_t)((v >> 16) & 0xFFu);
-    p[3] = (uint8_t)((v >> 24) & 0xFFu);
-}
-
 /* ------------------------------------------------------------------ payloads */
 
 void control_hello_default(control_hello_t *hello, uint32_t boot_id)
@@ -79,12 +60,12 @@ size_t control_hello_payload(const control_hello_t *hello, uint8_t *out, size_t 
     }
     out[0] = hello->proto_ver;
     memcpy(&out[1], hello->fw_version, 4);
-    wr_le32(&out[5], hello->boot_id);
-    wr_le16(&out[9], hello->max_frame);
-    wr_le16(&out[11], hello->chunk_size);
-    wr_le32(&out[13], hello->plan_capacity_bytes);
+    control_wr_le32(&out[5], hello->boot_id);
+    control_wr_le16(&out[9], hello->max_frame);
+    control_wr_le16(&out[11], hello->chunk_size);
+    control_wr_le32(&out[13], hello->plan_capacity_bytes);
     out[17] = hello->plan_slots;
-    wr_le16(&out[18], hello->features);
+    control_wr_le16(&out[18], hello->features);
     return 20;
 }
 
@@ -98,16 +79,16 @@ size_t control_status_payload(const control_status_t *status, uint8_t *out, size
     out[2] = status->mode;
     out[3] = status->plan_state;
     memcpy(&out[4], status->plan_hash, 16);
-    wr_le16(&out[20], status->plan_frame_count);
-    wr_le16(&out[22], status->current_frame);
-    wr_le32(&out[24], status->loop_count);
+    control_wr_le16(&out[20], status->plan_frame_count);
+    control_wr_le16(&out[22], status->current_frame);
+    control_wr_le32(&out[24], status->loop_count);
     out[28] = status->tag_state;
     memcpy(&out[29], status->tag_identity, 7);
     out[36] = status->console_polling;
     out[37] = status->last_error_code;
-    wr_le32(&out[38], status->last_error_detail);
+    control_wr_le32(&out[38], status->last_error_detail);
     out[42] = status->last_stop_reason;
-    wr_le32(&out[43], status->uptime_ms);
+    control_wr_le32(&out[43], status->uptime_ms);
     return 47;
 }
 
@@ -240,8 +221,20 @@ static size_t reply_start(control_state_t *st, const control_frame_t *frame, uin
         if (!st->plan_committed) {
             return control_reject(st, CONTROL_ERR_NO_PLAN, 0, out, out_cap);
         }
+        /* The physical half can refuse: a committed plan the executor cannot
+         * arm is the one case where the wire's `plan_state=COMMITTED` and the
+         * device's ability to replay disagree, and §2.3 says a rejection leaves
+         * state untouched — so the refusal is returned *before* the mode moves
+         * and the container never sees a `MACRO` that is not running. */
         if (st->fx.start_macro != NULL) {
-            st->fx.start_macro(st->fx.ctx);
+            uint8_t code = st->fx.start_macro(st->fx.ctx);
+            if (code != CONTROL_ERR_NONE) {
+                /* §2.5 types every code's `detail`, and `BAD_PLAN`'s is 0 (as
+                 * §2.7 repeats for the commit path). A more helpful number here
+                 * — the record count — would be a wire change to a closed,
+                 * typed field that the ticket did not ask to reopen. */
+                return control_reject(st, code, 0, out, out_cap);
+            }
         }
         st->status.current_frame = 0;
         st->status.loop_count = 0;
@@ -274,7 +267,7 @@ static size_t reply_stop(control_state_t *st, const control_frame_t *frame, uint
         return control_ack(st, CONTROL_VERB_STOP, NULL, 0, out, out_cap);
     }
 
-    /* The neutral release, the tag unplacement and the mode edge live in one
+    /* The neutral, the tag unplacement and the mode edge live in one
      * place so the container's stop and the device's panic stop cannot drift. */
     control_mode_exit(st, CONTROL_STOP_CONTAINER);
     return control_ack(st, CONTROL_VERB_STOP, NULL, 0, out, out_cap);
@@ -321,7 +314,7 @@ static size_t reply_config(control_state_t *st, const control_frame_t *frame, ui
     if (frame->len != CONTROL_CONFIG_SIZE) {
         return control_reject(st, CONTROL_ERR_BAD_LENGTH, frame->len, out, out_cap);
     }
-    uint16_t report_interval_ms = rd_le16(frame->payload);
+    uint16_t report_interval_ms = control_rd_le16(frame->payload);
     uint8_t led = frame->payload[2];
     st->config_report_interval_ms = report_interval_ms;
     st->config_led = led;

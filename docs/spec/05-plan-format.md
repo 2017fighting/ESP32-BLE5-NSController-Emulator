@@ -103,6 +103,21 @@ garbage.
 neutral and immediately restarts the loop — **no inter-loop gap** (the map's Q10). The
 neutral is the compiled-in template, on every exit path, never plan data.
 
+**"Immediately" means immediately after the neutral is handed to the reporter**, which is a
+real and bounded cost rather than a scheduled delay (§4.6's amendment): the double buffer holds
+one commit at a time, so the neutral must be consumed before record 0 overwrites the buffer it
+sits in. The wait is at most one report interval, and 50 ms in the pathological case where no
+console is subscribed.
+
+**The loop clock is free-running from the arm, and that is what keeps `loop_ms` exact.** The
+first loop's clock starts when its record 0 is applied (§4.3's ACK'd `START`); each later
+boundary's deadline is the previous boundary plus exactly `loop_ms`, not the tick at which the
+handoff happened to finish. So `sum(hold_ms) == loop_ms` holds of the loop's own timeline even
+when a deadline lands between ticks, and the handoff's cost is paid in *when the boundary is
+observed* rather than in the loop's length. Re-anchoring every loop to the instant record 0
+lands would round each loop up to the 10 ms tick — a 25 ms loop becoming 30 ms — which is
+precisely the drift §7.5 documents.
+
 ## 5.5 Validation
 
 **Refuse the whole compile** (nothing is uploaded): an empty array; a missing, non-finite or

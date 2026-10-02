@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "controller/hid_controller.h"
 
@@ -89,7 +90,30 @@ typedef struct __attribute__((packed)) {
 } hid_report_pro2_t;
 static_assert(sizeof(hid_report_pro2_t) == 63);
 
+/* The plan executor writes a record's nine state bytes in one memcpy from
+ * offset 0x02 (§5.3 says the state bytes *are* the report's own buttons ‖
+ * left_stick ‖ right_stick layout). These pin that, and they are why the
+ * off-by-one in the comments beside `left_stick`/`right_stick` (0x04/0x07) is
+ * harmless: the fields below are the ones at 0x0B/0x0C, so the real offsets are
+ * 0x02, 0x05 and 0x08 and the three are contiguous. */
+static_assert(offsetof(hid_report_pro2_t, buttons) == 0x02,
+              "plan state byte 0 must land at report 0x02");
+static_assert(offsetof(hid_report_pro2_t, left_stick) == 0x05,
+              "plan state byte 3 must land at report 0x05");
+static_assert(offsetof(hid_report_pro2_t, right_stick) == 0x08,
+              "plan state byte 6 must land at report 0x08");
+static_assert(offsetof(hid_report_pro2_t, unknown_0x0b) == 0x0B,
+              "the NFC state byte follows the sticks with no padding");
+
 extern controller_hid_ops_t controller_pro2_ops;
+
+/* §4.6's neutral state, in the report's own nine-byte layout (buttons ‖ left ‖
+ * right at offset 0x02). `pro2_report_init` uses it, so the report a fresh
+ * controller carries and the release the executor guarantees share one
+ * definition. The executor's template is asserted equal to it at init
+ * (`control_parser.c`), which is the check two translation units cannot make at
+ * compile time. */
+extern const uint8_t pro2_neutral_state[9];
 
 #define PRO2_FIRMWARE_INFO_SIZE 12
 extern const uint8_t pro2_firmware_info[12];

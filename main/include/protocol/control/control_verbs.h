@@ -66,8 +66,12 @@ typedef enum {
  */
 typedef struct {
     void *ctx;
-    /* START: arm the executor at frame 0 and emit neutral first (§4.6). */
-    void (*start_macro)(void *ctx);
+    /* START: arm the executor at frame 0 and emit neutral first (§4.6). Returns
+     * a §2.5 code: `CONTROL_ERR_NONE` once armed, or the refusal the plan earns
+     * — a plan the device cannot replay (a hand-built zero-record plan, or bytes
+     * that fail the §5.3 check) is a typed `ERROR` rather than a `MACRO` the
+     * container believes started. A rejected arm touches nothing (§2.3). */
+    uint8_t (*start_macro)(void *ctx);
     /* STOP: neutral release, stop the executor, unplace any tag, return to IDLE
      * (§4.3, §4.6). @p reason is the §3.2 `last_stop_reason`. */
     void (*stop)(void *ctx, uint8_t reason);

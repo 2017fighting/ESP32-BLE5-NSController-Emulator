@@ -146,9 +146,26 @@ its cases. `last_error` disambiguates "by hand" from "by hand, and broken":
 | `CONTAINER_STOP` | `NONE` | stopped in the app |
 | `BOOT_LOCAL` | `NONE` | stopped by hand at the board |
 | `BOOT_LOCAL` | set | stopped by hand, and something is broken |
+| `NONE` | set | **stopped by the device, not by anyone** — the executor fault path |
 
 `NONE` is the third value: a device that has booted and has not yet stopped. It is not
-"unknown" and must not be rendered as one.
+"unknown" and must not be rendered as one. With `last_error` set it is the fourth row and is
+**not** ambiguous: nothing but the executor fault path produces it, because a container stop
+always writes `CONTAINER_STOP` and the BOOT edge always writes `BOOT_LOCAL`. The container
+must not auto-restart on it either — the plan is exactly what the device just refused — and
+must surface `last_error` rather than the stop reason.
+
+**Why no fourth stop reason (amended by #24).** §4.6's fault path — a malformed plan, a frame
+index out of range, a commit check mismatch — ends a mode without a container verb and without
+a human at the board, so an earlier reading wanted a fifth value in the table above. It does not
+get one. `last_stop_reason` is a closed set of *who stopped it*, and adding a device-fault value
+would be a wire change to a set §3.2 and §2.5 both call closed, for a fact the `last_error`
+pair already carries: its `code` names *what* was wrong, which is all a fourth reason could have
+done and more precisely than "something faulted". The `detail` adds nothing for these codes —
+§2.5 types `BAD_PLAN`'s as 0, as §2.7's commit path also sends — and that is deliberate rather
+than an omission: the container's response to a bad plan is to reload it, not to act on an
+index. The pair is read the same way from either surface, which is what §3.2 promised it for, so
+the `NONE` + set row is the answer and the closed sets stay closed.
 
 **On the name.** `BOOT_LOCAL` reads as "the device rebooted locally", and it does not mean
 that: the value travels on this link, so by definition the device did **not** reboot to produce

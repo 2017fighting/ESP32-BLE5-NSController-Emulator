@@ -195,7 +195,7 @@ chapter defines the verbs, chapter 4 defines when they are accepted.
 | `BAD_STATE` | the verb is illegal in the current mode | chapter 4 |
 | `NO_PLAN` | `START` with no committed plan | `START` |
 | `ALREADY_RUNNING` | `START` while already in `MACRO` | `START` |
-| `BAD_PLAN` | committed bytes failed the structural check | `LOAD_PLAN` |
+| `BAD_PLAN` | committed bytes failed the structural check, or a committed plan the device cannot run | `LOAD_PLAN`, `START` |
 | `PLAN_TOO_LARGE` | the transfer exceeds `plan_capacity_bytes` | `LOAD_PLAN` |
 
 **The wire values.** The codes are numbered **1–9 in the order of the table above**:
@@ -203,6 +203,14 @@ chapter defines the verbs, chapter 4 defines when they are accepted.
 `NO_PLAN` 6, `ALREADY_RUNNING` 7, `BAD_PLAN` 8, `PLAN_TOO_LARGE` 9. Zero is `NONE` and is
 **`STATUS`-only** (§3.2): an `ERROR` reply never carries it. The set is closed, so these
 numbers are as fixed as the names.
+
+**"Raised by" is descriptive, not part of the closed set** — the closure is over the *codes*,
+and the third column names the verb(s) that can produce one today. `BAD_PLAN` is the case that
+made this worth stating: a plan can pass the structural check at commit and still be something
+the device cannot run (a zero-record plan, which §5.3's check accepts and §5.5's compiler never
+emits), and `START` is what discovers that. Both moments are the same rule — "these bytes are
+not a runnable plan" — so they share the code rather than growing a second one for a distinction
+the container acts on identically (it reloads). §4.3's transition table carries the row.
 
 **The `ERROR` frame.** `ERROR` is a `REPLY` whose `verb` is 10 and whose payload is exactly
 five bytes:

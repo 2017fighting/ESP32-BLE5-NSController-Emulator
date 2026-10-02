@@ -123,11 +123,6 @@ uint16_t control_crc16_frame(const uint8_t *header5, const uint8_t *payload, siz
 
 /* ------------------------------------------------------------------- decoder */
 
-static uint16_t rd_le16(const uint8_t *p)
-{
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
-
 void control_decoder_reset(control_decoder_t *dec)
 {
     if (dec == NULL) {
@@ -197,8 +192,8 @@ static control_dec_result_t decode_block(control_decoder_t *dec)
     uint8_t ver = f[0];
     uint8_t type = f[1];
     uint8_t verb = f[2];
-    uint16_t len = rd_le16(&f[3]);
-    uint16_t crc = rd_le16(&f[5]);
+    uint16_t len = control_rd_le16(&f[3]);
+    uint16_t crc = control_rd_le16(&f[5]);
 
     if ((size_t)CONTROL_HEADER_SIZE + len != n || (size_t)CONTROL_HEADER_SIZE + len > CONTROL_MAX_FRAME) {
         dec->n_drops++;

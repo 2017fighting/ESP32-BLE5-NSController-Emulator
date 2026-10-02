@@ -24,7 +24,10 @@
 #include "driver/gpio.h"
 
 #include "controller/controller.h"
+#include "controller/hid_controller.h"
+#include "controller/hid_controller_pro2.h"
 #include "protocol/control/control_events.h"
+#include "protocol/control/control_executor.h"
 #include "protocol/control/control_link.h"
 #include "protocol/control/control_mode.h"
 #include "protocol/control/control_protocol.h"
@@ -40,7 +43,7 @@
  *  - **Order.** The parser task submits a reply only after the handler returns,
  *    so an event raised *inside* a handler would otherwise hit the wire first.
  *    §11 trace A is explicit that `START` ACKs and *then* emits `MODE_CHANGED`.
- *    The queue is drained on the parser's next pass, after the reply.
+ *    The queue is drained on the parser's next turn, after the reply.
  *  - **Other tasks.** A console-link event comes from the NimBLE host task and a
  *    panic edge from the GPIO task; both enqueue under the lock and the parser
  *    task writes, so there is one writer.
@@ -67,6 +70,7 @@ typedef struct {
     control_decoder_t dec;
     control_state_t ctl;
     control_panic_t panic;
+    control_executor_t ex;
     control_event_queue_t events;
     uint8_t tx[CONTROL_WIRE_MAX];
 } control_parser_state_t;
@@ -106,6 +110,20 @@ static void control_ctl_unlock(void)
  * against.
  */
 static uint8_t s_plan_stage[CONTROL_PLAN_CAPACITY_BYTES];
+
+/*
+ * §4.6's template is the executor's compiled-in constant, and it must equal the
+ * neutral the Pro2 report is initialised with — otherwise the neutral the design
+ * guarantees and the report a fresh controller carries could disagree. The two
+ * headers `static_assert` their own offsets, but neither can compare two
+ * translation units, and a wrong neutral is exactly the kind of defect that is
+ * invisible on the wire. So it is checked once, at init, and said loudly.
+ */
+static bool executor_neutral_matches_the_report(void)
+{
+    return memcmp(control_executor_neutral, pro2_neutral_state,
+                  CONTROL_EXECUTOR_STATE_BYTES) == 0;
+}
 
 /* ------------------------------------------------------------------- events */
 
@@ -191,7 +209,7 @@ static parse_result_t control_parser_parse_frame(void *state, zc_ringbuf_t *rb,
     /* Unsolicited §3.3 events are deliberately NOT drained here. The router only
      * calls parse_frame() when the RX ring has a byte, and an event must not wait
      * for the host to send one; `control_parser_poll_event()` is drained by the
-     * transport task every pass instead. That also keeps the reply of the request
+     * transport task every turn instead. That also keeps the reply of the request
      * in hand ahead of the events it raised (§11 trace A). */
     uint8_t byte;
     while (rsp->len == 0 && zc_read_byte(rb, &byte)) {
@@ -274,11 +292,81 @@ static void control_panic_task(void *arg)
 
 /* --------------------------------------------------------------- the effects */
 
+/* The one clock the executor and the status field share. `esp_timer_get_time()`
+ * is microseconds; the executor works in exact milliseconds. */
+static uint32_t control_now_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+/*
+ * The plan executor's physical half (#24). These three functions are the whole
+ * boundary between the portable walk and the report: write nine bytes and
+ * commit, and answer whether the reporter has taken the commit. They run with
+ * the control lock held (§7.2's callback discipline), so they touch nothing but
+ * the HID layer — no event emission, no verb handling.
+ */
+static bool executor_apply_state(void *ctx, const uint8_t state[CONTROL_EXECUTOR_STATE_BYTES])
+{
+    (void)ctx;
+    if (g_hid_controller.hid_ops == NULL || g_hid_controller.hid_ops->set_state == NULL) {
+        return false;
+    }
+    controller_hid_report_t *back = g_hid_controller.ops->get_back_buffer(&g_hid_controller);
+    if (back == NULL) {
+        return false;
+    }
+    g_hid_controller.hid_ops->set_state(back, state);
+    g_hid_controller.ops->hid_commit(&g_hid_controller);
+    return true;
+}
+
+static bool executor_commit_idle(void *ctx)
+{
+    (void)ctx;
+    /* §4.6 against §5.4: the reporter's one `swap_request` bit is the only
+     * observable proof that the neutral left the back buffer — which is what
+     * "committed and transmitted" means in this firmware. It is a *read*, so the
+     * wait never blocks the report task.
+     *
+     * **There is nothing to wait for when no console has subscribed.** The
+     * report task skips the swap entirely without a notify-enabled subscriber
+     * (`hid_controller.c`), so `swap_request` would stay set forever and every
+     * loop boundary would pay the full 50 ms bound — a 1000 ms loop measured
+     * +51.9 ms per loop on the bench (G-4's "is a macro run harmless
+     * against an absent console?" answered in the code). Nobody is subscribed
+     * means nobody is owed the neutral, so the handoff is vacuously complete.
+     */
+    g_subscribe_state_t *sub = subscribe_entry_get(NS2_NOTIFICATION_HANDLE);
+    if (sub == NULL || !sub->notify_enabled || sub->conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return true;
+    }
+    /* Via the ops table, not the buffer: "has the reporter taken the commit" is
+     * the HID layer's question to answer, not the control layer's to assume. */
+    return g_hid_controller.ops->commit_idle(&g_hid_controller);
+}
+
+static uint8_t executor_start_macro(void *ctx)
+{
+    (void)ctx;
+    return control_executor_arm(&s_control.ex, &s_control.ctl, control_now_ms());
+}
+
+static void executor_stop(void *ctx, uint8_t reason)
+{
+    (void)ctx;
+    (void)reason;
+    /* §4.3: the neutral, the tag unplacement and the mode edge are
+     * `control_mode_exit`'s; this is only the executor's half, so the
+     * container's STOP and the BOOT stop cannot drift. */
+    control_executor_stop(&s_control.ex);
+}
+
 /*
  * PAIR_UNPAIR is the only effect #23 owns: bonding is one of the five axes and
  * the firmware owns it (ADR-0013). It always means *forget the bond and go
- * pairable*, never a toggle, and it changes no mode (§4.3). The executor and the
- * `nfc_state` byte arrive with #24 and #25.
+ * pairable*, never a toggle, and it changes no mode (§4.3). The `nfc_state`
+ * byte arrives with #25.
  */
 static void control_pair_unpair_effect(void *ctx)
 {
@@ -286,6 +374,28 @@ static void control_pair_unpair_effect(void *ctx)
     controller_pairing_info_erase();
     control_set_bond(&s_control.ctl, CONTROL_BOND_UNPAIRED);
 }
+
+/* ---------------------------------------------------------- the executor task */
+
+/*
+ * §7.3 step 5: the task that walks the plan. `10 ms` is one tick at
+ * `CONFIG_FREERTOS_HZ = 100`; the report density is a separate axis (§7.5,
+ * ADR-0009), so a smaller period here would only spin and a larger one would
+ * only delay *when* a due frame is observed, never how long it is held.
+ */
+static void control_executor_task(void *arg)
+{
+    (void)arg;
+    TickType_t last = xTaskGetTickCount();
+    for (;;) {
+        control_ctl_lock();
+        control_fill_status(&s_control.ctl);
+        control_executor_step(&s_control.ex, &s_control.ctl, control_now_ms());
+        control_ctl_unlock();
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(CONTROL_EXECUTOR_TICK_MS));
+    }
+}
+
 /* ------------------------------------------------------------- the glue API */
 
 void control_parser_init(void)
@@ -305,11 +415,30 @@ void control_parser_init(void)
     control_state_set_event_sink(&s_control.ctl, &sink);
     control_panic_init(&s_control.panic);
 
+    if (!executor_neutral_matches_the_report()) {
+        ESP_LOGE("control", "the executor's neutral does not match the Pro2 report's");
+    }
+
+    const control_executor_io_t io = {
+        .ctx = NULL,
+        .apply_state = executor_apply_state,
+        .commit_idle = executor_commit_idle,
+    };
+    control_executor_init(&s_control.ex, &io);
+
     const control_effects_t fx = {
         .ctx = NULL,
+        .start_macro = executor_start_macro,
+        .stop = executor_stop,
         .pair_unpair = control_pair_unpair_effect,
     };
     control_state_set_effects(&s_control.ctl, &fx);
+
+    /* §7.3 step 5. Created here, before the transport can carry a `START`, so an
+     * arm cannot depend on a task that has not started. */
+    if (xTaskCreate(control_executor_task, "control_exec", 3072, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE("control", "failed to start the plan executor task");
+    }
 
     /* Read in every mode, with the control link up or down, and needing no ACK
      * (§4.5). It is the only halt that does not come from the container. */
@@ -331,6 +460,13 @@ void control_notify_console_link(uint8_t which, uint16_t reason)
 {
     control_ctl_lock();
     control_set_console_link(&s_control.ctl, which, reason);
+    if (which == CONTROL_CONSOLE_EVENT_RESUBSCRIBED) {
+        /* §4.6/§4.7: the re-subscribe is one of the neutral's exit paths, and
+         * the loop then continues at its current frame rather than restarting.
+         * `gap.c` still calls `hid_reset` for the report buffers; this is the
+         * executor's half of the same edge. */
+        control_executor_rearm(&s_control.ex, &s_control.ctl, control_now_ms());
+    }
     control_ctl_unlock();
 }
 

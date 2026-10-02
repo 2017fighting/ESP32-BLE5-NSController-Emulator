@@ -246,6 +246,16 @@ static void controller_hid_reset_impl(controller_handle_t *ctrl) {
     ctrl->hid_ops->report_init(ctrl->buffer.back_buffer);
 }
 
+/* §4.6's "committed and transmitted": true once the reporter has taken the last
+ * commit. A read of the one `swap_request` bit, so it never blocks the report
+ * task, and it keeps the buffer's internals out of the control layer (#24). */
+static bool controller_commit_idle_impl(controller_handle_t *ctrl) {
+    if (ctrl == NULL) {
+        return true;
+    }
+    return ctrl->buffer.swap_request == 0;
+}
+
 const controller_ops_t controller_ops = {
     .name           = "controller",
     .init           = controller_init_impl,
@@ -255,4 +265,5 @@ const controller_ops_t controller_ops = {
     .get_back_buffer = controller_get_back_buffer_impl,
     .hid_commit     = controller_hid_commit_impl,
     .hid_reset      = controller_hid_reset_impl,
+    .commit_idle    = controller_commit_idle_impl,
 };

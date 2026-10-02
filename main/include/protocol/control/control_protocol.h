@@ -50,12 +50,15 @@ extern "C" {
  * the physical halves — the executor (#24), the tag server (#25) and the
  * applied-CONFIG effect (still a stub) — are `control_effects_t` no-ops on this
  * build, so the honest advertisement is "nothing yet". #24/#25 flip their bits
- * as their effects land, one line each. */
+ * as their effects land, one line each. `MACRO` is on as of #24: the executor
+ * walks a committed plan, owns the neutral, and refuses an arm it cannot honour
+ * (so `START` never enters `MACRO` without a running walk). `CONFIG` stays off
+ * even though the verb is accepted, because its applied effect is still a stub. */
 #define CONTROL_FEATURES_NONE 0x0000u
 #define CONTROL_FEATURE_MACRO 0x0001u
 #define CONTROL_FEATURE_AMIIBO 0x0002u
 #define CONTROL_FEATURE_CONFIG 0x0004u
-#define CONTROL_FEATURES CONTROL_FEATURES_NONE
+#define CONTROL_FEATURES (CONTROL_FEATURE_MACRO)
 
 /* §2.6 `fw_version` is 4x u8 major.minor.patch.build. `build` is free for a
  * monotonic per-flash counter later. */
@@ -169,6 +172,41 @@ typedef struct {
     void *ctx;
     void (*write)(void *ctx, uint8_t kind, const uint8_t *payload, size_t len);
 } control_event_sink_t;
+
+/* ---------------------------------------------------------------------- LE
+ *
+ * The protocol is little-endian throughout (§2.2, §5.3), and every field is
+ * assembled byte by byte rather than by struct punning so a big-endian host
+ * produces the same bytes. These four are the only place that happens: they were
+ * copied into five files before #24, and one copy per new module is exactly the
+ * kind of drift a golden fixture cannot catch (it pins the bytes, not the
+ * readers).
+ */
+
+static inline uint16_t control_rd_le16(const uint8_t *p)
+{
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+static inline uint32_t control_rd_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static inline void control_wr_le16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+}
+
+static inline void control_wr_le32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
 
 /* ---------------------------------------------------------------------- COBS */
 

@@ -144,6 +144,9 @@ typedef struct {
     uint8_t last_config_led;
     uint8_t last_placed[CONTROL_TAG_SIZE];
     size_t last_placed_len;
+    /* Set to a §2.5 code to model an executor that refuses to arm, which is how
+     * the dispatcher's refusal path is reachable without a real plan. */
+    uint8_t start_refusal;
 
     /* The §3.3 event sink double (issue #23). The sink carries kind + payload
      * (the adapter owns encoding), so the assertions read the event, not a
@@ -154,9 +157,11 @@ typedef struct {
     int event_count;
 } harness_t;
 
-static inline void harness_fx_start(void *ctx)
+static inline uint8_t harness_fx_start(void *ctx)
 {
-    ((harness_t *)ctx)->start_calls++;
+    harness_t *h = (harness_t *)ctx;
+    h->start_calls++;
+    return h->start_refusal;
 }
 
 static inline void harness_fx_stop(void *ctx, uint8_t reason)

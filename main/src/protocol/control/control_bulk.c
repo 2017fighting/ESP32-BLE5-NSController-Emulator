@@ -21,25 +21,6 @@
 #include "protocol/control/control_mode.h"
 #include "protocol/plan.h"
 
-static uint16_t rd_le16(const uint8_t *p)
-{
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
-
-static uint32_t rd_le32(const uint8_t *p)
-{
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-           ((uint32_t)p[3] << 24);
-}
-
-static void wr_le32(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)(v & 0xFFu);
-    p[1] = (uint8_t)((v >> 8) & 0xFFu);
-    p[2] = (uint8_t)((v >> 16) & 0xFFu);
-    p[3] = (uint8_t)((v >> 24) & 0xFFu);
-}
-
 /* ----------------------------------------------------------------- plan check */
 
 uint8_t control_plan_check(const uint8_t *bytes, size_t len, size_t capacity,
@@ -57,7 +38,7 @@ uint8_t control_plan_check(const uint8_t *bytes, size_t len, size_t capacity,
     if (len < PLAN_HEADER_SIZE) {
         return CONTROL_ERR_BAD_PLAN;
     }
-    if (rd_le32(bytes) != PLAN_MAGIC) {
+    if (control_rd_le32(bytes) != PLAN_MAGIC) {
         return CONTROL_ERR_BAD_PLAN;
     }
     if (bytes[4] != PLAN_FORMAT_VERSION) {
@@ -66,7 +47,7 @@ uint8_t control_plan_check(const uint8_t *bytes, size_t len, size_t capacity,
     if (bytes[5] != PLAN_RECORD_SIZE) {
         return CONTROL_ERR_BAD_PLAN;
     }
-    uint16_t records = rd_le16(&bytes[6]);
+    uint16_t records = control_rd_le16(&bytes[6]);
     if ((uint32_t)len != PLAN_PAYLOAD_SIZE(records)) {
         return CONTROL_ERR_BAD_PLAN;
     }
@@ -138,7 +119,7 @@ static size_t bulk_ack(control_state_t *st, uint8_t verb, uint32_t offset, uint8
                        size_t out_cap)
 {
     uint8_t payload[4];
-    wr_le32(payload, offset);
+    control_wr_le32(payload, offset);
     return control_ack(st, verb, payload, sizeof(payload), out, out_cap);
 }
 
@@ -156,7 +137,7 @@ static size_t handle_announce(control_state_t *st, const control_frame_t *frame,
         return control_reject(st, CONTROL_ERR_BAD_LENGTH, frame->len, out, out_cap);
     }
 
-    uint32_t total = rd_le32(&payload[1]);
+    uint32_t total = control_rd_le32(&payload[1]);
 
     if (is_plan) {
         /* ADR-0007: a plan is Loaded in IDLE only. */
@@ -211,7 +192,7 @@ static size_t handle_chunk(control_state_t *st, const control_frame_t *frame, co
         return control_reject(st, CONTROL_ERR_BAD_LENGTH, frame->len, out, out_cap);
     }
 
-    uint32_t offset = rd_le32(&payload[1]);
+    uint32_t offset = control_rd_le32(&payload[1]);
     size_t n = (size_t)frame->len - 5u;
     const uint8_t *chunk = &payload[5];
 
@@ -262,7 +243,7 @@ static size_t handle_commit(control_state_t *st, const control_frame_t *frame, c
         return control_reject(st, CONTROL_ERR_BAD_LENGTH, frame->len, out, out_cap);
     }
 
-    uint32_t total = rd_le32(&payload[1]);
+    uint32_t total = control_rd_le32(&payload[1]);
     uint32_t done = st->stage_total;
 
     if (is_plan) {

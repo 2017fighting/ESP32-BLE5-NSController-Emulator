@@ -11,20 +11,6 @@
 
 #include <string.h>
 
-static void wr_le16(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)(v & 0xFFu);
-    p[1] = (uint8_t)((v >> 8) & 0xFFu);
-}
-
-static void wr_le32(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)(v & 0xFFu);
-    p[1] = (uint8_t)((v >> 8) & 0xFFu);
-    p[2] = (uint8_t)((v >> 16) & 0xFFu);
-    p[3] = (uint8_t)((v >> 24) & 0xFFu);
-}
-
 size_t control_event_encode(uint8_t kind, const uint8_t *payload, size_t len, uint8_t *out,
                             size_t cap)
 {
@@ -89,7 +75,7 @@ void control_event_console_link(control_state_t *st, uint8_t which, uint16_t rea
      * byte. */
     uint8_t payload[3];
     payload[0] = which;
-    wr_le16(&payload[1], reason);
+    control_wr_le16(&payload[1], reason);
     control_event_emit(st, CONTROL_EVENT_CONSOLE_LINK, payload, sizeof(payload));
 }
 
@@ -99,7 +85,7 @@ void control_event_boot(control_state_t *st)
         return;
     }
     uint8_t payload[4];
-    wr_le32(payload, st->hello.boot_id);
+    control_wr_le32(payload, st->hello.boot_id);
     control_event_emit(st, CONTROL_EVENT_BOOT, payload, sizeof(payload));
 }
 
@@ -119,7 +105,7 @@ bool control_event_loop_completed(control_state_t *st, uint32_t loop_count)
     }
     st->loop_event_pending = true;
     uint8_t payload[4];
-    wr_le32(payload, loop_count);
+    control_wr_le32(payload, loop_count);
     control_event_emit(st, CONTROL_EVENT_LOOP_COMPLETED, payload, sizeof(payload));
     return true;
 }
@@ -141,7 +127,7 @@ size_t control_raise_error(control_state_t *st, uint8_t code, uint32_t detail, u
         st->status.last_error_detail = detail;
         uint8_t payload[5];
         payload[0] = code;
-        wr_le32(&payload[1], detail);
+        control_wr_le32(&payload[1], detail);
         control_event_emit(st, CONTROL_EVENT_ERROR_RAISED, payload, sizeof(payload));
     }
     return control_encode_error(code, detail, out, cap);
