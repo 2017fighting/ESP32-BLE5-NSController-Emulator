@@ -1,10 +1,11 @@
 name: control framing
 
-# The CONTROL plane's host guard (issue #21, spec §2.2/§2.8/§2.10): the portable
-# COBS+CRC framing, the HELLO/STATUS dispatch and the bulk log rate policy are
-# asserted here without the device. The point of the suite is that a log flood costs
-# frames but never resets the link, which cannot be re-checked by eye on the
-# bench.
+# The CONTROL plane's host guard (issues #21 and #22, spec §2/§3/§4.3/§5.3): the
+# portable COBS+CRC framing, the HELLO/STATUS dispatch, the ten verbs over the
+# windowed bulk path, and the bulk log rate policy are asserted here without the
+# device. The point of the suite is that a log flood costs frames but never resets
+# the link, and that a truncated-but-CRC-valid plan is refused rather than
+# replayed — neither of which can be re-checked by eye on the bench.
 
 on:
   push:
@@ -19,25 +20,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: C — CONTROL framing, dispatch and log policy
+      - name: C — framing, dispatch, verbs and log policy
         run: |
           set -euo pipefail
-          cc -std=c11 -Wall -Wextra -Werror -Imain/include \
+          portable="
+            main/src/protocol/control/control_frame.c
+            main/src/protocol/control/control_dispatch.c
+            main/src/protocol/control/control_bulk.c
+            main/src/protocol/control/control_log.c"
+          cc -std=c11 -Wall -Wextra -Werror -Imain/include -Itest/host \
             -o "$RUNNER_TEMP/test_control_framing" \
-            test/host/test_control_framing.c \
-            main/src/protocol/control/control_frame.c \
-            main/src/protocol/control/control_dispatch.c \
-            main/src/protocol/control/control_log.c
+            test/host/test_control_framing.c $portable
           "$RUNNER_TEMP/test_control_framing"
+          cc -std=c11 -Wall -Wextra -Werror -Imain/include -Itest/host \
+            -o "$RUNNER_TEMP/test_control_verbs" \
+            test/host/test_control_verbs.c $portable
+          "$RUNNER_TEMP/test_control_verbs"
 
-      - name: C — the same suite under ASan/UBSan
+      - name: C — the same suites under ASan/UBSan
         run: |
           set -euo pipefail
-          cc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
-            -fno-omit-frame-pointer -Imain/include \
-            -o "$RUNNER_TEMP/test_control_framing_asan" \
-            test/host/test_control_framing.c \
-            main/src/protocol/control/control_frame.c \
-            main/src/protocol/control/control_dispatch.c \
-            main/src/protocol/control/control_log.c
-          "$RUNNER_TEMP/test_control_framing_asan"
+          portable="
+            main/src/protocol/control/control_frame.c
+            main/src/protocol/control/control_dispatch.c
+            main/src/protocol/control/control_bulk.c
+            main/src/protocol/control/control_log.c"
+          for suite in test_control_framing test_control_verbs; do
+            cc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
+              -fno-omit-frame-pointer -Imain/include -Itest/host \
+              -o "$RUNNER_TEMP/${suite}_asan" "test/host/${suite}.c" $portable
+            "$RUNNER_TEMP/${suite}_asan"
+          done

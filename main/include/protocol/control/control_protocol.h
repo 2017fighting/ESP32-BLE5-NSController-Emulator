@@ -46,14 +46,15 @@ extern "C" {
 #define CONTROL_PLAN_CAPACITY_BYTES 65536u
 #define CONTROL_PLAN_SLOTS 1u
 
-/* §2.6 `features` bits. Stage 1 implements HELLO and STATUS only, and neither
- * has a feature bit, so the honest advertisement is "nothing else yet". The
- * verbs of #22-#25 flip the bits as they land. */
+/* §2.6 `features` bits. The bit is gated on the *verb* surface, not on the
+ * physical half: #22 lands every verb (the macro executor of #24 and the tag
+ * server of #25 are firmware changes with no protocol surface, per §12.1), so
+ * the honest advertisement is all three. */
 #define CONTROL_FEATURES_NONE 0x0000u
 #define CONTROL_FEATURE_MACRO 0x0001u
 #define CONTROL_FEATURE_AMIIBO 0x0002u
 #define CONTROL_FEATURE_CONFIG 0x0004u
-#define CONTROL_FEATURES CONTROL_FEATURES_NONE
+#define CONTROL_FEATURES (CONTROL_FEATURE_MACRO | CONTROL_FEATURE_AMIIBO | CONTROL_FEATURE_CONFIG)
 
 /* §2.6 `fw_version` is 4x u8 major.minor.patch.build. `build` is free for a
  * monotonic per-flash counter later. */
@@ -261,22 +262,6 @@ size_t control_status_payload(const control_status_t *status, uint8_t *out, size
 
 /* A zeroed status with the boot defaults of §4.8: IDLE, nothing staged. */
 void control_status_default(control_status_t *status);
-
-/* ---------------------------------------------------------------- dispatch */
-
-/*
- * Handles one trusted REQUEST. Returns the wire length of the reply written to
- * @p out, or 0 when there is no reply (a REQUEST always gets one, so 0 means the
- * encoder did not fit). HELLO is the one tolerantly parsed frame (§2.8); STATUS
- * is strict.
- *
- * Stage 1 implements HELLO and STATUS. The mode verbs are stubs that answer
- * `ERROR BAD_STATE` with the current mode; #22-#25 replace them. See the
- * implementation comment for why BAD_STATE is the least-wrong interim code.
- */
-size_t control_handle_request(const control_frame_t *frame, const control_hello_t *hello,
-                              const control_status_t *status, uint8_t *out,
-                              size_t out_cap);
 
 /* Fills a HELLO capability record with the §2.6 limits and CONTROL_FEATURES. */
 void control_hello_default(control_hello_t *hello, uint32_t boot_id);

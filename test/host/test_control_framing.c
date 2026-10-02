@@ -4,171 +4,23 @@
  *
  * No ESP-IDF, no device. This is what makes "a log flood costs frames but never
  * resets the link" a property asserted in CI rather than a hope for the bench.
+ * The verb surface of issue #22 is `test_control_verbs.c`.
  *
  * Build:
- *   cc -std=c11 -Wall -Wextra -Werror -Imain/include \
+ *   cc -std=c11 -Wall -Wextra -Werror -Imain/include -Itest/host \
  *      -o test_control_framing \
  *      test/host/test_control_framing.c \
  *      main/src/protocol/control/control_frame.c \
  *      main/src/protocol/control/control_dispatch.c \
+ *      main/src/protocol/control/control_bulk.c \
  *      main/src/protocol/control/control_log.c
  * Run:
  *   ./test_control_framing
  */
 
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
+#include "control_test_util.h"
 
 #include "protocol/control/control_log.h"
-#include "protocol/control/control_protocol.h"
-
-static int g_failures;
-static int g_checks;
-
-#define CHECK(cond, ...)                            \
-    do {                                            \
-        g_checks++;                                 \
-        if (!(cond)) {                              \
-            g_failures++;                           \
-            fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-            fprintf(stderr, __VA_ARGS__);           \
-            fprintf(stderr, "\n");                  \
-        }                                           \
-    } while (0)
-
-/* --------------------------------------------------------------- raw builder */
-
-/* Mirrors control_encode() but with an explicit header `ver`, so the version
- * check can be exercised without a corrupting byte flip. */
-static size_t wire_build(uint8_t ver, uint8_t type, uint8_t verb, const uint8_t *payload,
-                         size_t len, uint8_t *out, size_t out_cap)
-{
-    uint8_t scratch[CONTROL_MAX_FRAME];
-    scratch[0] = ver;
-    scratch[1] = type;
-    scratch[2] = verb;
-    scratch[3] = (uint8_t)(len & 0xFFu);
-    scratch[4] = (uint8_t)((len >> 8) & 0xFFu);
-    uint16_t crc = control_crc16_frame(scratch, payload, len);
-    scratch[5] = (uint8_t)(crc & 0xFFu);
-    scratch[6] = (uint8_t)(crc >> 8);
-    if (len > 0) {
-        memcpy(&scratch[7], payload, len);
-    }
-    out[0] = 0x00;
-    size_t enc = control_cobs_encode(scratch, 7 + len, &out[1], out_cap - 1);
-    out[enc + 1] = 0x00;
-    return enc + 2;
-}
-
-/* Host-side parse of a wire frame, accepting any type (the device decoder
- * deliberately discards REPLY/EVENT). Used to inspect what the device sent. */
-static int wire_parse(const uint8_t *wire, size_t n, control_frame_t *out, uint8_t *storage,
-                      size_t storage_cap)
-{
-    if (n < 3 || wire[0] != 0x00 || wire[n - 1] != 0x00) {
-        return -1;
-    }
-    size_t dec_len = 0;
-    if (control_cobs_decode(&wire[1], n - 2, storage, storage_cap, &dec_len) != CONTROL_COBS_OK) {
-        return -1;
-    }
-    if (dec_len < CONTROL_HEADER_SIZE) {
-        return -1;
-    }
-    out->ver = storage[0];
-    out->type = storage[1];
-    out->verb = storage[2];
-    out->len = (uint16_t)(storage[3] | (storage[4] << 8));
-    if ((size_t)CONTROL_HEADER_SIZE + out->len != dec_len) {
-        return -1;
-    }
-    uint16_t crc = (uint16_t)(storage[5] | (storage[6] << 8));
-    if (control_crc16_frame(storage, storage + CONTROL_HEADER_SIZE, out->len) != crc) {
-        return -1;
-    }
-    out->payload = storage + CONTROL_HEADER_SIZE;
-    return 0;
-}
-
-/* ------------------------------------------------------------------- harness */
-
-typedef struct {
-    control_decoder_t dec;
-    control_hello_t hello;
-    control_status_t status;
-    uint8_t tx[CONTROL_WIRE_MAX];
-    size_t tx_len;
-    uint8_t tx_verb;
-    int replies;
-    int errors;
-    uint8_t err_code;
-    uint32_t err_detail;
-} harness_t;
-
-static void harness_init(harness_t *h)
-{
-    memset(h, 0, sizeof(*h));
-    control_decoder_reset(&h->dec);
-    control_hello_default(&h->hello, 0x11223344u);
-    control_status_default(&h->status);
-}
-
-/* Every emitted wire frame is parsed back, so the test always inspects what
- * actually left the device rather than an intermediate struct. */
-static void harness_emit(harness_t *h)
-{
-    if (h->tx_len == 0) {
-        return;
-    }
-    h->replies++;
-    control_frame_t reply;
-    uint8_t storage[CONTROL_WIRE_MAX];
-    CHECK(wire_parse(h->tx, h->tx_len, &reply, storage, sizeof(storage)) == 0,
-          "reply did not parse as a well-formed frame");
-    h->tx_verb = reply.verb;
-    if (reply.verb == CONTROL_VERB_ERROR && reply.len == 5) {
-        h->errors++;
-        h->err_code = reply.payload[0];
-        h->err_detail = (uint32_t)reply.payload[1] | ((uint32_t)reply.payload[2] << 8) |
-                        ((uint32_t)reply.payload[3] << 16) | ((uint32_t)reply.payload[4] << 24);
-    }
-}
-
-static void harness_feed(harness_t *h, const uint8_t *bytes, size_t n)
-{
-    for (size_t i = 0; i < n; i++) {
-        control_dec_result_t r = control_decoder_feed(&h->dec, bytes[i]);
-        if (r == CONTROL_DEC_FRAME) {
-            h->tx_len = control_handle_request(&h->dec.last, &h->hello, &h->status, h->tx,
-                                               sizeof(h->tx));
-            harness_emit(h);
-        } else if (r == CONTROL_DEC_REJECT) {
-            h->tx_len = control_encode_error(h->dec.reject_code, h->dec.reject_detail, h->tx,
-                                             sizeof(h->tx));
-            harness_emit(h);
-        }
-    }
-}
-
-/* Reads an ERROR reply payload (code u8, detail le32) out of the wire bytes. */
-static int decode_error_reply(const uint8_t *wire, size_t wire_len, uint8_t *code,
-                              uint32_t *detail)
-{
-    control_frame_t frame;
-    uint8_t storage[CONTROL_WIRE_MAX];
-    if (wire_parse(wire, wire_len, &frame, storage, sizeof(storage)) != 0) {
-        return -1;
-    }
-    if (frame.verb != CONTROL_VERB_ERROR || frame.len != 5) {
-        return -1;
-    }
-    *code = frame.payload[0];
-    *detail = (uint32_t)frame.payload[1] | ((uint32_t)frame.payload[2] << 8) |
-              ((uint32_t)frame.payload[3] << 16) | ((uint32_t)frame.payload[4] << 24);
-    return 0;
-}
 
 /* ---------------------------------------------------------------- CRC / COBS */
 
@@ -176,7 +28,8 @@ static void test_crc(void)
 {
     const uint8_t check[] = "123456789";
     CHECK(control_crc16_update(CONTROL_CRC_INIT, check, 9) == 0x29B1u,
-          "CRC check value is 0x%04X, expected 0x29B1", control_crc16_update(CONTROL_CRC_INIT, check, 9));
+          "CRC check value is 0x%04X, expected 0x29B1",
+          control_crc16_update(CONTROL_CRC_INIT, check, 9));
 
     /* The two-segment form must equal the concatenated one. */
     uint8_t hdr[5] = {1, 2, 5, 3, 0};
@@ -413,10 +266,10 @@ static void test_status_strict_and_layout(void)
 {
     harness_t h;
     harness_init(&h);
-    h.status.mode = CONTROL_MODE_IDLE;
-    h.status.uptime_ms = 0x01020304u;
-    h.status.plan_frame_count = 0xBEEFu;
-    h.status.last_stop_reason = CONTROL_STOP_BOOT_LOCAL;
+    h.ctl.status.mode = CONTROL_MODE_IDLE;
+    h.ctl.status.uptime_ms = 0x01020304u;
+    h.ctl.status.plan_frame_count = 0xBEEFu;
+    h.ctl.status.last_stop_reason = CONTROL_STOP_BOOT_LOCAL;
 
     uint8_t wire[CONTROL_WIRE_MAX];
     size_t n = control_encode(CONTROL_TYPE_REQUEST, CONTROL_VERB_STATUS, NULL, 0, wire, sizeof(wire));
@@ -484,22 +337,6 @@ static void test_reply_and_event_at_device_are_silent(void)
           h.errors);
 }
 
-static void test_unimplemented_verb_stub(void)
-{
-    harness_t h;
-    harness_init(&h);
-    h.status.mode = CONTROL_MODE_IDLE;
-    uint8_t wire[CONTROL_WIRE_MAX];
-    size_t n = control_encode(CONTROL_TYPE_REQUEST, CONTROL_VERB_START, NULL, 0, wire, sizeof(wire));
-    harness_feed(&h, wire, n);
-    CHECK(h.replies == 1, "a staged-out verb must still be answered");
-    uint8_t code = 0;
-    uint32_t detail = 0;
-    CHECK(decode_error_reply(h.tx, h.tx_len, &code, &detail) == 0 && code == CONTROL_ERR_BAD_STATE &&
-              detail == CONTROL_MODE_IDLE,
-          "START is an interim BAD_STATE(mode) stub until #22-#25");
-}
-
 static void test_error_reply_shape(void)
 {
     uint8_t wire[CONTROL_WIRE_MAX];
@@ -542,7 +379,9 @@ static void test_hello_payload_layout(void)
     CHECK(out[13] == 0x00 && out[14] == 0x00 && out[15] == 0x01 && out[16] == 0x00,
           "HELLO.plan_capacity_bytes = 65536 at 13");
     CHECK(out[17] == 1, "HELLO.plan_slots at 17");
-    CHECK(out[18] == 0x00 && out[19] == 0x00, "HELLO.features = 0 in stage 1");
+    CHECK(out[18] == (uint8_t)(CONTROL_FEATURES & 0xFFu) &&
+              out[19] == (uint8_t)(CONTROL_FEATURES >> 8),
+          "HELLO.features must advertise the landed verbs (#22)");
 }
 
 /* A block longer than max_frame is untrusted and must be silent (§2.8): it must
@@ -671,7 +510,6 @@ int main(void)
     test_status_strict_and_layout();
     test_unknown_type_and_verb();
     test_reply_and_event_at_device_are_silent();
-    test_unimplemented_verb_stub();
     test_error_reply_shape();
     test_max_frame_bounds();
     test_hello_payload_layout();
