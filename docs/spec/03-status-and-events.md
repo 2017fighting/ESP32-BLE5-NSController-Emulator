@@ -80,7 +80,7 @@ table below**, and the event's own payload follows the `kind` byte:
 | --- | --- | --- | --- |
 | `MODE_CHANGED` | 1 | the mode field changes, for any reason | `mode` u8 |
 | `PLAN_COMMITTED` | 2 | a `LOAD_PLAN` commits | `plan_hash` 16 B |
-| `PLAN_DISCARDED` | 3 | a long panic stop, or a `PLACE_AMIIBO` transition, drops the plan | — |
+| `PLAN_DISCARDED` | 3 | a long panic stop drops the plan | — |
 | `LOOP_COMPLETED` | 4 | a loop boundary is crossed (rate-limited, below) | `loop_count` u32 |
 | `TAG_PLACED` | 5 | a `PLACE_AMIIBO` commits and the tag starts answering | `tag_identity` 7 B |
 | `TAG_UNPLACED` | 6 | a tag stops answering, including the atomic-replace gap | — |
@@ -88,6 +88,13 @@ table below**, and the event's own payload follows the `kind` byte:
 | `ERROR_RAISED` | 8 | an `ERROR` reply was sent for a reason other than the container's last request | `code` u8 · `detail` u32 (§2.5) |
 | `CONSOLE_LINK` | 9 | the console link connects, disconnects, or re-subscribes | `which` u8 (0 `DISCONNECTED`, 1 `CONNECTED`, 2 `RESUBSCRIBED`) · `reason` u16 (0 unless `which = DISCONNECTED`) |
 | `BOOT` | 10 | the device has finished booting and is ready for `HELLO` | `boot_id` u32 |
+
+**`PLAN_DISCARDED` has one trigger, not two.** It was first written with a `PLACE_AMIIBO`
+transition as a second trigger, and that clause is removed here, in the chapter that owns the
+event kinds. §4.3's transition table and §11 trace B both place a tag without touching the
+committed plan, and §4.4's rule that a verb must not have a hidden second effect is exactly
+what "placing a tag silently drops a plan" would violate. The plan is discarded by the long
+panic stop (§4.5) and by nothing else.
 
 **`CONSOLE_LINK`'s `reason` is a `u16`, not a `u8`, and that is measured rather than
 chosen.** The only disconnect this hardware produces is 531 = `BLE_HS_ERR_HCI_BASE (0x200) +

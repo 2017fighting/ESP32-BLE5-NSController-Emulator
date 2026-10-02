@@ -39,6 +39,19 @@ size_t control_bulk_request(control_state_t *st, const control_frame_t *frame, u
 uint8_t control_plan_check(const uint8_t *bytes, size_t len, size_t capacity,
                            uint16_t *record_count_out);
 
+/*
+ * Discards the in-flight staging buffer and changes nothing else (§2.7 rule 7).
+ * The long panic stop uses it: "forget" includes bytes that never committed.
+ */
+void control_stage_abort(control_state_t *st);
+
+/*
+ * Discards the committed plan and reports `plan=none` (§3.2), leaving staging
+ * alone. One place, so the long panic stop and a superseding announce cannot
+ * disagree about what "no plan" looks like.
+ */
+void control_plan_discard(control_state_t *st);
+
 #ifdef __cplusplus
 }
 #endif

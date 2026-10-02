@@ -12,6 +12,8 @@
 
 #include "protocol/protocol.h"
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -20,9 +22,31 @@ extern "C" {
 
 extern protocol_instance_t control_protocol_instance;
 
-/* Generates this boot's `boot_id` (§2.6) and readies the decoder. Call once,
- * before the protocol task starts. */
+/* Generates this boot's `boot_id` (§2.6), readies the decoder, installs the
+ * §3.3 event sink and starts the §4.5 panic-stop task. Call once, before the
+ * protocol task starts. */
 void control_parser_init(void);
+
+/* Emits the §3.3 BOOT event. Separate from init because it must go out once the
+ * control link's TX lock exists: the container may still hold the port across a
+ * reboot, and that is exactly the case BOOT is for. */
+void control_parser_boot_event(void);
+
+/*
+ * Pops one pending §3.3 event as an encoded wire frame into @p out, or 0 when
+ * none is queued. The transport task calls this on every pass: the protocol
+ * router only reaches a parser when the RX ring has a byte, and an unsolicited
+ * event must not wait for the host to send one. Draining here — after the
+ * previous pass submitted its reply — is also what keeps a request's reply ahead
+ * of the events it raised (§11 trace A).
+ */
+size_t control_parser_poll_event(uint8_t *out, size_t cap);
+
+/* The §4.1 console-link and bonding axes, moved by the BLE callbacks. The
+ * console-link `which` is §3.3's (0 disconnected, 1 connected, 2 re-subscribed)
+ * and `bond` is §3.2's. */
+void control_notify_console_link(uint8_t which, uint16_t reason);
+void control_notify_bond(uint8_t bond);
 
 #endif /* CONFIG_PROTOCOL_LAYER_CONTROL */
 

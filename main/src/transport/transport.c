@@ -26,6 +26,7 @@
 
 #ifdef CONFIG_PROTOCOL_LAYER_CONTROL
 #include "protocol/control/control_parser.h"
+#include "protocol/control/control_protocol.h"
 #endif
 
 #include "protocol/control/control_link.h"
@@ -63,6 +64,22 @@ static void transport_protocol_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
+
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+        /* §3.3: an unsolicited EVENT must not wait for the host to send a byte,
+         * and `protocol_route` only calls into a parser when the RX ring is
+         * non-empty. Drain first, so an event raised while handling the previous
+         * request is written after that request's reply (§11 trace A). */
+        {
+            uint8_t event_wire[CONTROL_WIRE_MAX];
+            size_t event_len = control_parser_poll_event(event_wire, sizeof(event_wire));
+            if (event_len > 0 && g_transport.ops->submit_tx != NULL) {
+                g_transport.ops->submit_tx(&g_transport, event_wire, event_len);
+            }
+            /* Fall through and service the ring too: the event belongs to an
+             * earlier pass, so a reply written below still follows it. */
+        }
+#endif
 
         parser_rsp_t rsp = {0};
         parse_result_t result = protocol_route(g_protocol_inst, &g_transport_rx_ringbuf, &rsp);
@@ -186,6 +203,12 @@ int transport_init(void)
 #else
     ESP_LOGE(LOG_TRANSPORT, "No transport layer selected in configuration");
     return -1;
+#endif
+
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+    /* §3.3: once the transport can carry it, tell an already-attached container
+     * that this boot is ready for HELLO. */
+    control_parser_boot_event();
 #endif
 
     return 0;

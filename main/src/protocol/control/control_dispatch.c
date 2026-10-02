@@ -14,6 +14,8 @@
 #include <string.h>
 
 #include "protocol/control/control_bulk.h"
+#include "protocol/control/control_events.h"
+#include "protocol/control/control_mode.h"
 
 static uint16_t rd_le16(const uint8_t *p)
 {
@@ -133,6 +135,19 @@ void control_state_set_effects(control_state_t *st, const control_effects_t *fx)
     st->fx = *fx;
 }
 
+void control_state_set_event_sink(control_state_t *st, const control_event_sink_t *sink)
+{
+    if (st == NULL) {
+        return;
+    }
+    if (sink == NULL) {
+        control_event_sink_t none = {0};
+        st->events = none;
+        return;
+    }
+    st->events = *sink;
+}
+
 void control_clear_error(control_state_t *st)
 {
     if (st == NULL) {
@@ -193,7 +208,9 @@ static size_t reply_status(control_state_t *st, const control_frame_t *frame, ui
     }
     /* §3.2: `last_error` is cleared by the next successful *verb*, not by a read
      * — and STATUS is the read. Clearing it here would make the 2 Hz poll erase
-     * the very error the poll is reporting. */
+     * the very error the poll is reporting. The poll does supersede a pending
+     * LOOP_COMPLETED, which is what rate-limits that event (§3.3). */
+    control_event_note_status_served(st);
     return control_encode(CONTROL_TYPE_REPLY, CONTROL_VERB_STATUS, payload, n, out, out_cap);
 }
 
@@ -226,10 +243,16 @@ static size_t reply_start(control_state_t *st, const control_frame_t *frame, uin
         if (st->fx.start_macro != NULL) {
             st->fx.start_macro(st->fx.ctx);
         }
-        st->status.mode = CONTROL_MODE_MACRO;
         st->status.current_frame = 0;
         st->status.loop_count = 0;
-        return control_ack(st, CONTROL_VERB_START, NULL, 0, out, out_cap);
+        /* A new run starts with no un-superseded LOOP_COMPLETED: the previous
+         * run's last boundary must not suppress this run's first (§3.3). */
+        st->loop_event_pending = false;
+        size_t armed = control_ack(st, CONTROL_VERB_START, NULL, 0, out, out_cap);
+        /* §11 trace A step 11: the ACK means "armed", and the mode edge is
+         * announced after it. */
+        control_mode_enter(st, CONTROL_MODE_MACRO);
+        return armed;
     case CONTROL_MODE_MACRO:
         return control_reject(st, CONTROL_ERR_ALREADY_RUNNING, 0, out, out_cap);
     default:
@@ -251,17 +274,9 @@ static size_t reply_stop(control_state_t *st, const control_frame_t *frame, uint
         return control_ack(st, CONTROL_VERB_STOP, NULL, 0, out, out_cap);
     }
 
-    if (st->fx.stop != NULL) {
-        st->fx.stop(st->fx.ctx, CONTROL_STOP_CONTAINER);
-    }
-    if (st->status.mode == CONTROL_MODE_AMIIBO) {
-        st->tag_placed = false;
-        st->status.tag_state = CONTROL_TAG_NONE;
-        memset(st->status.tag_identity, 0, sizeof(st->status.tag_identity));
-    }
-    st->status.mode = CONTROL_MODE_IDLE;
-    st->status.current_frame = 0;
-    st->status.last_stop_reason = CONTROL_STOP_CONTAINER;
+    /* The neutral release, the tag unplacement and the mode edge live in one
+     * place so the container's stop and the device's panic stop cannot drift. */
+    control_mode_exit(st, CONTROL_STOP_CONTAINER);
     return control_ack(st, CONTROL_VERB_STOP, NULL, 0, out, out_cap);
 }
 
@@ -276,11 +291,10 @@ static size_t reply_unplace_amiibo(control_state_t *st, const control_frame_t *f
         if (st->fx.unplace_tag != NULL) {
             st->fx.unplace_tag(st->fx.ctx);
         }
-        /* §4.3: the tag stops answering and the 540 bytes are retained. */
-        st->tag_placed = false;
-        st->status.tag_state = CONTROL_TAG_NONE;
-        memset(st->status.tag_identity, 0, sizeof(st->status.tag_identity));
-        st->status.mode = CONTROL_MODE_IDLE;
+        /* §4.3: the tag stops answering and the 540 bytes are retained. This is
+         * a tag operation, not a stop — it sets no `last_stop_reason`. */
+        control_tag_unplace(st);
+        control_mode_enter(st, CONTROL_MODE_IDLE);
     }
     return control_ack(st, CONTROL_VERB_UNPLACE_AMIIBO, NULL, 0, out, out_cap);
 }

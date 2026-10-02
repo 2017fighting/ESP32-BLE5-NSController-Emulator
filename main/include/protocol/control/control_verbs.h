@@ -11,11 +11,16 @@
  * and the plan structural check — is exercised on the host
  * (`test/host/test_control_verbs.c`) rather than on the bench.
  *
- * The boundary with the mode machine (#23), the plan executor (#24) and the NFC
- * tag server (#25) is `control_effects_t`: the verb layer owns what the wire can
- * observe (mode, staging, plan/tag state, `last_error`, `last_stop_reason`) and
- * calls a callback for every physical effect it cannot perform. Those tickets
- * supply the real callbacks; the host tests supply a double.
+ * The mode axis and the §3.3 EVENT surface moved out of this file with #23:
+ * `control_mode.{h,c}` is the only place a mode moves (so `MODE_CHANGED` has one
+ * emission site) and owns the panic stop, and `control_events.{h,c}` owns the
+ * event kinds and the `LOOP_COMPLETED` rate limit.
+ *
+ * The boundary with the plan executor (#24) and the amiibo tag server (#25) is
+ * `control_effects_t`: the verb layer owns what the wire can observe (mode,
+ * staging, plan/tag state, `last_error`, `last_stop_reason`) and calls a callback
+ * for every physical effect it cannot perform. Those tickets supply the real
+ * callbacks; the host tests supply a double.
  */
 
 #include <stdbool.h>
@@ -66,7 +71,7 @@ typedef struct {
     /* STOP: neutral release, stop the executor, unplace any tag, return to IDLE
      * (§4.3, §4.6). @p reason is the §3.2 `last_stop_reason`. */
     void (*stop)(void *ctx, uint8_t reason);
-    /* PLACE_AMIIBO commit: drive the NFC state byte and serve @p tag (§6.5). The
+    /* PLACE_AMIIBO commit: drive the `nfc_state` byte and serve @p tag (§6.5). The
      * tag-absent gap on a replace lives here (chapter 6, #25). */
     void (*place_tag)(void *ctx, const uint8_t *tag, size_t len);
     /* UNPLACE_AMIIBO: stop answering, keep the bytes (§4.3). */
@@ -125,6 +130,13 @@ typedef struct {
     uint8_t config_led;
     bool config_pending;
 
+    /* §3.3: where EVENT frames go, and the LOOP_COMPLETED rate limit's one bit.
+     * A loop boundary emits only when the previous event has been superseded by
+     * a STATUS reply; the poll is the clock, so a short macro cannot saturate
+     * the link (§3.3). */
+    control_event_sink_t events;
+    bool loop_event_pending;
+
     control_effects_t fx;
 } control_state_t;
 
@@ -172,6 +184,10 @@ void control_clear_error(control_state_t *st);
  * pending. `IDLE`/`AMIIBO` never leave anything pending — they apply at once.
  */
 void control_config_apply_at_boundary(control_state_t *st);
+
+/* Installs the §3.3 EVENT sink. The firmware points it at `control_link_write`;
+ * a NULL sink is a no-op, which is what the host's verb-only suites use. */
+void control_state_set_event_sink(control_state_t *st, const control_event_sink_t *sink);
 
 #ifdef __cplusplus
 }

@@ -16,6 +16,9 @@
 
 #include "protocol/control/control_protocol.h"
 #include "protocol/control/control_verbs.h"
+#include "protocol/control/control_bulk.h"
+#include "protocol/control/control_mode.h"
+#include "protocol/plan.h"
 
 static int g_failures;
 static int g_checks;
@@ -111,9 +114,13 @@ static inline int decode_error_reply(const uint8_t *wire, size_t wire_len, uint8
 
 /* ------------------------------------------------------------------- harness */
 
+/* A bounded capture of the events a single test step can emit. */
+#define CONTROL_TEST_EVENT_MAX 24
+
 typedef struct {
     control_decoder_t dec;
     control_state_t ctl;
+    control_panic_t panic;
     uint8_t plan_stage[CONTROL_TEST_PLAN_CAP];
 
     uint8_t tx[CONTROL_WIRE_MAX];
@@ -137,6 +144,14 @@ typedef struct {
     uint8_t last_config_led;
     uint8_t last_placed[CONTROL_TAG_SIZE];
     size_t last_placed_len;
+
+    /* The §3.3 event sink double (issue #23). The sink carries kind + payload
+     * (the adapter owns encoding), so the assertions read the event, not a
+     * struct; `test_control_mode.c` pins the wire shape separately. */
+    uint8_t event_kinds[CONTROL_TEST_EVENT_MAX];
+    uint8_t event_payloads[CONTROL_TEST_EVENT_MAX][CONTROL_EVENT_PAYLOAD_MAX];
+    uint8_t event_lens[CONTROL_TEST_EVENT_MAX];
+    int event_count;
 } harness_t;
 
 static inline void harness_fx_start(void *ctx)
@@ -162,6 +177,39 @@ static inline void harness_fx_place(void *ctx, const uint8_t *tag, size_t len)
 static inline void harness_fx_unplace(void *ctx)
 {
     ((harness_t *)ctx)->unplace_calls++;
+}
+
+static inline void harness_fx_event(void *ctx, uint8_t kind, const uint8_t *payload, size_t len)
+{
+    harness_t *h = (harness_t *)ctx;
+    if (h->event_count >= CONTROL_TEST_EVENT_MAX) {
+        return;
+    }
+    int slot = h->event_count++;
+    h->event_kinds[slot] = kind;
+    if (len > CONTROL_EVENT_PAYLOAD_MAX) {
+        len = CONTROL_EVENT_PAYLOAD_MAX;
+    }
+    h->event_lens[slot] = (uint8_t)len;
+    if (len > 0 && payload != NULL) {
+        memcpy(h->event_payloads[slot], payload, len);
+    }
+}
+
+/* Index of the first event of @p kind at or after @p from, or -1. */
+static inline int harness_find_event(const harness_t *h, uint8_t kind, int from)
+{
+    for (int i = from; i < h->event_count; i++) {
+        if (h->event_kinds[i] == kind) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static inline int harness_has_event(const harness_t *h, uint8_t kind)
+{
+    return harness_find_event(h, kind, 0) >= 0;
 }
 
 static inline void harness_fx_pair(void *ctx)
@@ -192,6 +240,9 @@ static inline void harness_init(harness_t *h)
         .apply_config = harness_fx_config,
     };
     control_state_set_effects(&h->ctl, &fx);
+    control_event_sink_t sink = {.ctx = h, .write = harness_fx_event};
+    control_state_set_event_sink(&h->ctl, &sink);
+    control_panic_init(&h->panic);
 }
 
 /* Every emitted wire frame is parsed back, so the test always inspects what
@@ -240,6 +291,175 @@ static inline int harness_request(harness_t *h, uint8_t verb, const uint8_t *pay
     size_t n = control_encode(CONTROL_TYPE_REQUEST, verb, payload, len, wire, sizeof(wire));
     harness_feed(h, wire, n);
     return h->replies - before;
+}
+
+/*
+ * The §2.7 frame builders and the §5.3 plan shape, shared by the verb and mode
+ * suites so both drive the device exactly the way a container would.
+ */
+
+static inline void wr32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static inline uint32_t rd32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static inline void fill_hash(uint8_t hash[16], uint8_t seed)
+{
+    for (int i = 0; i < 16; i++) {
+        hash[i] = (uint8_t)(seed + i);
+    }
+}
+
+/* A structurally valid §5.3 plan: header + @p records zeroed records. The bytes
+ * are not a real macro, which is all the device's structural check sees. */
+static inline uint32_t build_plan(uint8_t *buf, uint16_t records, uint32_t loop_ms)
+{
+    uint32_t len = PLAN_HEADER_SIZE + PLAN_RECORD_SIZE * (uint32_t)records;
+    memset(buf, 0, len);
+    buf[0] = 'N';
+    buf[1] = 'S';
+    buf[2] = 'P';
+    buf[3] = 'L';
+    buf[4] = PLAN_FORMAT_VERSION;
+    buf[5] = PLAN_RECORD_SIZE;
+    buf[6] = (uint8_t)(records & 0xFFu);
+    buf[7] = (uint8_t)(records >> 8);
+    wr32(&buf[8], loop_ms);
+    return len;
+}
+
+static inline uint32_t last_ack_offset(const harness_t *h)
+{
+    control_frame_t f;
+    uint8_t storage[CONTROL_WIRE_MAX];
+    if (wire_parse(h->tx, h->tx_len, &f, storage, sizeof(storage)) != 0 || f.len != 4) {
+        return 0xFFFFFFFFu;
+    }
+    return rd32(f.payload);
+}
+
+static inline void plan_announce(harness_t *h, uint32_t total, const uint8_t hash[16])
+{
+    uint8_t p[21];
+    p[0] = CONTROL_BULK_OP_ANNOUNCE;
+    wr32(&p[1], total);
+    memcpy(&p[5], hash, 16);
+    harness_request(h, CONTROL_VERB_LOAD_PLAN, p, sizeof(p));
+}
+
+static inline void plan_commit(harness_t *h, uint32_t total, const uint8_t hash[16])
+{
+    uint8_t p[21];
+    p[0] = CONTROL_BULK_OP_COMMIT;
+    wr32(&p[1], total);
+    memcpy(&p[5], hash, 16);
+    harness_request(h, CONTROL_VERB_LOAD_PLAN, p, sizeof(p));
+}
+
+/* Sends chunks covering [from, upto) exactly like the container would. */
+static inline void plan_chunks_from(harness_t *h, const uint8_t *bytes, uint32_t from,
+                                    uint32_t upto)
+{
+    for (uint32_t off = from; off < upto;) {
+        size_t n = upto - off;
+        if (n > CONTROL_CHUNK_SIZE) {
+            n = CONTROL_CHUNK_SIZE;
+        }
+        uint8_t p[5 + CONTROL_CHUNK_SIZE];
+        p[0] = CONTROL_BULK_OP_CHUNK;
+        wr32(&p[1], off);
+        memcpy(&p[5], &bytes[off], n);
+        harness_request(h, CONTROL_VERB_LOAD_PLAN, p, 5 + n);
+        off += (uint32_t)n;
+    }
+}
+
+static inline void plan_chunks(harness_t *h, const uint8_t *bytes, uint32_t upto)
+{
+    plan_chunks_from(h, bytes, 0, upto);
+}
+
+static inline void tag_announce(harness_t *h, uint32_t total)
+{
+    uint8_t p[5];
+    p[0] = CONTROL_BULK_OP_ANNOUNCE;
+    wr32(&p[1], total);
+    harness_request(h, CONTROL_VERB_PLACE_AMIIBO, p, sizeof(p));
+}
+
+static inline void tag_chunks_from(harness_t *h, const uint8_t *bytes, uint32_t from,
+                                   uint32_t upto)
+{
+    for (uint32_t off = from; off < upto;) {
+        size_t n = upto - off;
+        if (n > CONTROL_CHUNK_SIZE) {
+            n = CONTROL_CHUNK_SIZE;
+        }
+        uint8_t p[5 + CONTROL_CHUNK_SIZE];
+        p[0] = CONTROL_BULK_OP_CHUNK;
+        wr32(&p[1], off);
+        memcpy(&p[5], &bytes[off], n);
+        harness_request(h, CONTROL_VERB_PLACE_AMIIBO, p, 5 + n);
+        off += (uint32_t)n;
+    }
+}
+
+static inline void tag_chunks(harness_t *h, const uint8_t *bytes, uint32_t upto)
+{
+    tag_chunks_from(h, bytes, 0, upto);
+}
+
+static inline void tag_commit(harness_t *h, uint32_t total)
+{
+    uint8_t p[5];
+    p[0] = CONTROL_BULK_OP_COMMIT;
+    wr32(&p[1], total);
+    harness_request(h, CONTROL_VERB_PLACE_AMIIBO, p, sizeof(p));
+}
+
+static inline void build_tag(uint8_t tag[CONTROL_TAG_SIZE], uint8_t uid0, uint8_t seed)
+{
+    memset(tag, 0, CONTROL_TAG_SIZE);
+    /* §6.3: UID[0..2] at 0-2, BCC0 at 3, UID[3..6] at 4-7. */
+    tag[0] = 0x04;
+    tag[1] = uid0;
+    tag[2] = 0xFE;
+    tag[3] = (uint8_t)(0x88u ^ tag[0] ^ tag[1] ^ tag[2]);
+    tag[4] = 0xCA;
+    tag[5] = seed;
+    tag[6] = 0x6C;
+    tag[7] = 0x81;
+    for (int i = 8; i < (int)CONTROL_TAG_SIZE; i++) {
+        tag[i] = (uint8_t)(seed ^ (uint8_t)i);
+    }
+}
+
+/* Reads STATUS out of the harness' last reply. */
+static inline int read_status(const harness_t *h, control_frame_t *frame, uint8_t *storage,
+                              size_t storage_cap)
+{
+    return wire_parse(h->tx, h->tx_len, frame, storage, storage_cap);
+}
+
+/* Loads and commits a fresh plan, so the mode suite can reach `MACRO`. */
+static inline void commit_plan(harness_t *h, uint8_t *scratch, uint16_t records,
+                               uint8_t hash_seed)
+{
+    uint8_t hash[16];
+    fill_hash(hash, hash_seed);
+    uint32_t total = build_plan(scratch, records, 100);
+    plan_announce(h, total, hash);
+    plan_chunks(h, scratch, total);
+    plan_commit(h, total, hash);
 }
 
 #endif /* CONTROL_TEST_UTIL_H */

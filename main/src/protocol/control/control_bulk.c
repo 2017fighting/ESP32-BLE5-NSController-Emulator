@@ -17,6 +17,8 @@
 
 #include <string.h>
 
+#include "protocol/control/control_events.h"
+#include "protocol/control/control_mode.h"
 #include "protocol/plan.h"
 
 static uint16_t rd_le16(const uint8_t *p)
@@ -86,13 +88,18 @@ static void stage_reset(control_state_t *st)
     memset(st->stage_hash, 0, sizeof(st->stage_hash));
 }
 
-/*
- * §2.7 rule 6 and `plan_slots = 1`: an announce reports `plan=none` until the
- * commit lands, and the one plan buffer is the one being staged over — so the
- * previous plan is superseded here, not at the commit.
- */
-static void plan_supersede(control_state_t *st)
+void control_stage_abort(control_state_t *st)
 {
+    if (st != NULL) {
+        stage_reset(st);
+    }
+}
+
+void control_plan_discard(control_state_t *st)
+{
+    if (st == NULL) {
+        return;
+    }
     st->plan_committed = false;
     st->plan = NULL;
     st->plan_len = 0;
@@ -101,6 +108,16 @@ static void plan_supersede(control_state_t *st)
     st->status.plan_state = CONTROL_PLAN_NONE;
     memset(st->status.plan_hash, 0, sizeof(st->status.plan_hash));
     st->status.plan_frame_count = 0;
+}
+
+/*
+ * §2.7 rule 6 and `plan_slots = 1`: an announce reports `plan=none` until the
+ * commit lands, and the one plan buffer is the one being staged over — so the
+ * previous plan is superseded here, not at the commit.
+ */
+static void plan_supersede(control_state_t *st)
+{
+    control_plan_discard(st);
 }
 
 /* The §6.1 Identity is the seven-byte NFC UID. In the §6.3 tag image it is
@@ -280,6 +297,9 @@ static size_t handle_commit(control_state_t *st, const control_frame_t *frame, c
         st->status.plan_state = CONTROL_PLAN_COMMITTED;
         memcpy(st->status.plan_hash, st->stage_hash, sizeof(st->status.plan_hash));
         st->status.plan_frame_count = records;
+        /* §3.3/§11 trace A step 9: the commit is announced, and the hash is what
+         * the container compares its own against. */
+        control_event_plan_committed(st, st->plan_hash);
     } else {
         if (st->status.mode == CONTROL_MODE_MACRO) {
             stage_reset(st);
@@ -292,17 +312,23 @@ static size_t handle_commit(control_state_t *st, const control_frame_t *frame, c
         }
 
         /* The 540-byte copy is what makes the replace atomic (§4.3): the old tag
-         * answers until this instant, then `place_tag` owns the §6.5 gap. */
+         * answers until this instant, then `place_tag` owns the §6.5 gap. A
+         * replace emits the gap's TAG_UNPLACED before the new TAG_PLACED. */
+        if (st->tag_placed) {
+            control_event_tag_unplaced(st);
+        }
         memcpy(st->tag, st->tag_stage, CONTROL_TAG_SIZE);
         st->tag_placed = true;
         tag_identity(st->tag, st->tag_identity);
         st->status.tag_state = CONTROL_TAG_PLACED;
         memcpy(st->status.tag_identity, st->tag_identity, sizeof(st->status.tag_identity));
-        st->status.mode = CONTROL_MODE_AMIIBO;
         control_clear_error(st);
         if (st->fx.place_tag != NULL) {
             st->fx.place_tag(st->fx.ctx, st->tag, CONTROL_TAG_SIZE);
         }
+        control_event_tag_placed(st, st->tag_identity);
+        /* IDLE -> AMIIBO; a replace is already AMIIBO and emits no mode edge. */
+        control_mode_enter(st, CONTROL_MODE_AMIIBO);
     }
 
     stage_reset(st);

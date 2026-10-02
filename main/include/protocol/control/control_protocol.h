@@ -47,10 +47,10 @@ extern "C" {
 #define CONTROL_PLAN_SLOTS 1u
 
 /* §2.6 `features` bits. A bit is a promise the build can honour end to end, and
- * the physical halves of all three — the executor (#24), the tag server (#25)
- * and the applied-CONFIG boundary (#23) — are `control_effects_t` no-ops on this
- * build, so the honest advertisement is "nothing yet". #23-#25 flip the bits as
- * their effects land, one line each. */
+ * the physical halves — the executor (#24), the tag server (#25) and the
+ * applied-CONFIG effect (still a stub) — are `control_effects_t` no-ops on this
+ * build, so the honest advertisement is "nothing yet". #24/#25 flip their bits
+ * as their effects land, one line each. */
 #define CONTROL_FEATURES_NONE 0x0000u
 #define CONTROL_FEATURE_MACRO 0x0001u
 #define CONTROL_FEATURE_AMIIBO 0x0002u
@@ -132,6 +132,43 @@ enum {
     CONTROL_STOP_CONTAINER = 1,
     CONTROL_STOP_BOOT_LOCAL = 2,
 };
+
+/* §3.3 EVENT kinds, numbered 1-10 in the order of the table there. An EVENT's
+ * `verb` is 0 and its payload begins with this `kind` byte (§2.4, §3.3). */
+enum {
+    CONTROL_EVENT_MODE_CHANGED = 1,
+    CONTROL_EVENT_PLAN_COMMITTED = 2,
+    CONTROL_EVENT_PLAN_DISCARDED = 3,
+    CONTROL_EVENT_LOOP_COMPLETED = 4,
+    CONTROL_EVENT_TAG_PLACED = 5,
+    CONTROL_EVENT_TAG_UNPLACED = 6,
+    CONTROL_EVENT_SCAN_ENDED = 7,
+    CONTROL_EVENT_ERROR_RAISED = 8,
+    CONTROL_EVENT_CONSOLE_LINK = 9,
+    CONTROL_EVENT_BOOT = 10,
+};
+
+/* §3.3 `CONSOLE_LINK`'s `which` byte. */
+enum {
+    CONTROL_CONSOLE_EVENT_DISCONNECTED = 0,
+    CONTROL_CONSOLE_EVENT_CONNECTED = 1,
+    CONTROL_CONSOLE_EVENT_RESUBSCRIBED = 2,
+};
+
+/* The largest EVENT payload after its `kind` byte: `PLAN_COMMITTED`'s 16-byte
+ * hash. A `CONSOLE_LINK` reason is a u16 (§3.3) and fits under it. */
+#define CONTROL_EVENT_PAYLOAD_MAX 16u
+
+/*
+ * Where a device EVENT goes. The adapter is told the event's kind and payload
+ * and owns the encoding (and the shared TX lock, §2.2), so the portable side
+ * never decides wire layout and a host test captures kind + payload directly.
+ * It is a seam because the host suite and the firmware are two adapters over it.
+ */
+typedef struct {
+    void *ctx;
+    void (*write)(void *ctx, uint8_t kind, const uint8_t *payload, size_t len);
+} control_event_sink_t;
 
 /* ---------------------------------------------------------------------- COBS */
 

@@ -3,6 +3,11 @@
 #include "utils.h"
 #include "ns2_codec.h"
 
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+#include "protocol/control/control_parser.h"
+#include "protocol/control/control_protocol.h"
+#endif
+
 #include "esp_mac.h"
 #include "esp_random.h"
 
@@ -63,6 +68,11 @@ int pro2_device_init(nvs_handle_t nvs_handle) {
         ESP_LOGI(LOG_APP, "device already paired.");
         log_print_ltk_hex("LTK", g_controller_firmware.ltk);
     }
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+    /* §4.8: after power-up the bonding axis is whatever NVS says, and the bond
+     * is the only state that survives a power cycle (ADR-0004). */
+    control_notify_bond(ltk_ret == ESP_OK ? CONTROL_BOND_PAIRED : CONTROL_BOND_UNPAIRED);
+#endif
 
     const uint8_t version[3] = {0x01, 0x06, 0x01};
     const uint8_t body_color[3] = {0x23, 0x23, 0x23};

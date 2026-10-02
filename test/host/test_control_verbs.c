@@ -12,7 +12,9 @@
  *      test/host/test_control_verbs.c \
  *      main/src/protocol/control/control_frame.c \
  *      main/src/protocol/control/control_dispatch.c \
- *      main/src/protocol/control/control_bulk.c
+ *      main/src/protocol/control/control_bulk.c \
+ *      main/src/protocol/control/control_events.c \
+ *      main/src/protocol/control/control_mode.c
  * Run:
  *   ./test_control_verbs
  */
@@ -23,141 +25,6 @@
 #include "protocol/plan.h"
 
 static uint8_t g_plan[CONTROL_TEST_PLAN_CAP];
-
-/* ------------------------------------------------------------------ builders */
-
-static void wr32(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)(v & 0xFFu);
-    p[1] = (uint8_t)((v >> 8) & 0xFFu);
-    p[2] = (uint8_t)((v >> 16) & 0xFFu);
-    p[3] = (uint8_t)((v >> 24) & 0xFFu);
-}
-
-static uint32_t rd32(const uint8_t *p)
-{
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-           ((uint32_t)p[3] << 24);
-}
-
-static void fill_hash(uint8_t hash[16], uint8_t seed)
-{
-    for (int i = 0; i < 16; i++) {
-        hash[i] = (uint8_t)(seed + i);
-    }
-}
-
-/* A structurally valid §5.3 plan: header + @p records zeroed records. The bytes
- * are not a real macro, which is all the device's structural check sees. */
-static uint32_t build_plan(uint8_t *buf, uint16_t records, uint32_t loop_ms)
-{
-    uint32_t len = PLAN_HEADER_SIZE + PLAN_RECORD_SIZE * (uint32_t)records;
-    memset(buf, 0, len);
-    buf[0] = 'N';
-    buf[1] = 'S';
-    buf[2] = 'P';
-    buf[3] = 'L';
-    buf[4] = PLAN_FORMAT_VERSION;
-    buf[5] = PLAN_RECORD_SIZE;
-    buf[6] = (uint8_t)(records & 0xFFu);
-    buf[7] = (uint8_t)(records >> 8);
-    wr32(&buf[8], loop_ms);
-    return len;
-}
-
-static uint32_t last_ack_offset(const harness_t *h)
-{
-    control_frame_t f;
-    uint8_t storage[CONTROL_WIRE_MAX];
-    if (wire_parse(h->tx, h->tx_len, &f, storage, sizeof(storage)) != 0 || f.len != 4) {
-        return 0xFFFFFFFFu;
-    }
-    return rd32(f.payload);
-}
-
-static void plan_announce(harness_t *h, uint32_t total, const uint8_t hash[16])
-{
-    uint8_t p[21];
-    p[0] = CONTROL_BULK_OP_ANNOUNCE;
-    wr32(&p[1], total);
-    memcpy(&p[5], hash, 16);
-    harness_request(h, CONTROL_VERB_LOAD_PLAN, p, sizeof(p));
-}
-
-static void plan_commit(harness_t *h, uint32_t total, const uint8_t hash[16])
-{
-    uint8_t p[21];
-    p[0] = CONTROL_BULK_OP_COMMIT;
-    wr32(&p[1], total);
-    memcpy(&p[5], hash, 16);
-    harness_request(h, CONTROL_VERB_LOAD_PLAN, p, sizeof(p));
-}
-
-/* Sends chunks covering [from, upto) exactly like the container would. */
-static void plan_chunks_from(harness_t *h, const uint8_t *bytes, uint32_t from, uint32_t upto)
-{
-    for (uint32_t off = from; off < upto;) {
-        size_t n = upto - off;
-        if (n > CONTROL_CHUNK_SIZE) {
-            n = CONTROL_CHUNK_SIZE;
-        }
-        uint8_t p[5 + CONTROL_CHUNK_SIZE];
-        p[0] = CONTROL_BULK_OP_CHUNK;
-        wr32(&p[1], off);
-        memcpy(&p[5], &bytes[off], n);
-        harness_request(h, CONTROL_VERB_LOAD_PLAN, p, 5 + n);
-        off += (uint32_t)n;
-    }
-}
-
-static void plan_chunks(harness_t *h, const uint8_t *bytes, uint32_t upto)
-{
-    plan_chunks_from(h, bytes, 0, upto);
-}
-
-static void tag_announce(harness_t *h, uint32_t total)
-{
-    uint8_t p[5];
-    p[0] = CONTROL_BULK_OP_ANNOUNCE;
-    wr32(&p[1], total);
-    harness_request(h, CONTROL_VERB_PLACE_AMIIBO, p, sizeof(p));
-}
-
-static void tag_chunks_from(harness_t *h, const uint8_t *bytes, uint32_t from, uint32_t upto)
-{
-    for (uint32_t off = from; off < upto;) {
-        size_t n = upto - off;
-        if (n > CONTROL_CHUNK_SIZE) {
-            n = CONTROL_CHUNK_SIZE;
-        }
-        uint8_t p[5 + CONTROL_CHUNK_SIZE];
-        p[0] = CONTROL_BULK_OP_CHUNK;
-        wr32(&p[1], off);
-        memcpy(&p[5], &bytes[off], n);
-        harness_request(h, CONTROL_VERB_PLACE_AMIIBO, p, 5 + n);
-        off += (uint32_t)n;
-    }
-}
-
-static void tag_chunks(harness_t *h, const uint8_t *bytes, uint32_t upto)
-{
-    tag_chunks_from(h, bytes, 0, upto);
-}
-
-static void tag_commit(harness_t *h, uint32_t total)
-{
-    uint8_t p[5];
-    p[0] = CONTROL_BULK_OP_COMMIT;
-    wr32(&p[1], total);
-    harness_request(h, CONTROL_VERB_PLACE_AMIIBO, p, sizeof(p));
-}
-
-/* Reads STATUS out of the harness' last reply. */
-static int read_status(const harness_t *h, control_frame_t *frame, uint8_t *storage,
-                       size_t storage_cap)
-{
-    return wire_parse(h->tx, h->tx_len, frame, storage, storage_cap);
-}
 
 /* ----------------------------------------------------------------- plan check */
 
@@ -519,23 +386,6 @@ static void test_config(void)
 }
 
 /* ------------------------------------------------------------ PLACE_AMIIBO */
-
-static void build_tag(uint8_t tag[CONTROL_TAG_SIZE], uint8_t uid0, uint8_t seed)
-{
-    memset(tag, 0, CONTROL_TAG_SIZE);
-    /* §6.3: UID[0..2] at 0-2, BCC0 at 3, UID[3..6] at 4-7. */
-    tag[0] = 0x04;
-    tag[1] = uid0;
-    tag[2] = 0xFE;
-    tag[3] = (uint8_t)(0x88u ^ tag[0] ^ tag[1] ^ tag[2]);
-    tag[4] = 0xCA;
-    tag[5] = seed;
-    tag[6] = 0x6C;
-    tag[7] = 0x81;
-    for (int i = 8; i < (int)CONTROL_TAG_SIZE; i++) {
-        tag[i] = (uint8_t)(seed ^ (uint8_t)i);
-    }
-}
 
 static void test_place_unplace(void)
 {

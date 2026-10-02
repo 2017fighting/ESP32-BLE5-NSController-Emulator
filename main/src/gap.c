@@ -2,6 +2,11 @@
 #include "controller/hid_controller.h"
 #include "utils.h"
 
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+#include "protocol/control/control_parser.h"
+#include "protocol/control/control_protocol.h"
+#endif
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 
@@ -67,6 +72,11 @@ int handle_gap_event(struct ble_gap_event* event, void* arg) {
         if (s_restart_adv_timer != NULL) {
           xTimerStop(s_restart_adv_timer, 0);
         }
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+        // §4.1/§3.3: the console link is one of the five axes, and its edge is
+        // an EVENT; the container never infers it from the control link.
+        control_notify_console_link(CONTROL_CONSOLE_EVENT_CONNECTED, 0);
+#endif
       } else {
         // failed, restart advertising
         ESP_LOGE(LOG_BLE_GAP, "connection failed, status=%d, restart advertising",
@@ -76,6 +86,12 @@ int handle_gap_event(struct ble_gap_event* event, void* arg) {
       return 0;
     case BLE_GAP_EVENT_DISCONNECT:
       ESP_LOGI(LOG_BLE_GAP, "disconnected, reason=%d, restart advertising after 5s", event->disconnect.reason);
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+      // §3.3: `reason` is a u16 because the one measured value that matters is
+      // 531 = 0x0213, which does not fit a byte. The drop changes no mode (§4.7).
+      control_notify_console_link(CONTROL_CONSOLE_EVENT_DISCONNECTED,
+                                  (uint16_t)event->disconnect.reason);
+#endif
       if (s_restart_adv_timer == NULL) {
         s_restart_adv_timer = xTimerCreate("restart_adv", pdMS_TO_TICKS(3000), pdFALSE, NULL, restart_adv_timer_cb);
       }
@@ -136,6 +152,11 @@ int handle_gap_event(struct ble_gap_event* event, void* arg) {
         g_hid_controller.ops->hid_reset(&g_hid_controller);
         // start hid task
         g_hid_controller.ops->start_task(&g_hid_controller);
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+        // §3.3/§4.7: a re-subscribe re-arms neutral and the pass continues at
+        // its current frame; it is a console-link edge, not a mode change.
+        control_notify_console_link(CONTROL_CONSOLE_EVENT_RESUBSCRIBED, 0);
+#endif
       }
       break;
     case BLE_GAP_EVENT_MTU:

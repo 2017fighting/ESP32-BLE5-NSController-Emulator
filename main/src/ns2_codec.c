@@ -5,6 +5,11 @@
 #include "controller/hid_controller_pro2.h"
 #include "utils.h"
 
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+#include "protocol/control/control_parser.h"
+#include "protocol/control/control_protocol.h"
+#endif
+
 #include "host/ble_att.h"
 
 /**
@@ -500,6 +505,11 @@ static uint8_t cmd_0x15_handler(const uint8_t subcmd, const uint16_t payload_len
 
                 if (rc == 0) {
                     data_out[0] = 0x01;
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+                    // §4.1/ADR-0013: the bond is the durable pairing key, and
+                    // the firmware owns it; STATUS reports it, nothing announces it.
+                    control_notify_bond(CONTROL_BOND_PAIRED);
+#endif
                     // is_enc = true;
                     return 0x01;
                 }
