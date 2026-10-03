@@ -8,7 +8,7 @@
    │  python:3.12-slim            │  control   │  firmware on the IDF v5.5.5    │
    │  one asyncio process         │  link      │  NimBLE peripheral             │
    │  macro + amiibo libraries    │ ◄════════► │  HID report task               │
-   │  the retail key (in RAM)     │  USB 921600│  plan + tag in RAM             │
+   │  the retail key (in RAM)     │  USB 115200│  plan + tag in RAM             │
    └──────────────────────────────┘            └───────────────┬───────────────┘
                                                               │ console link
                                                               │ BLE, 5 ms
@@ -36,7 +36,7 @@ the state that matters (ADR-0003, ADR-0004, ADR-0011).
 | --- | --- | --- |
 | Between | container ↔ device | device ↔ NS2 |
 | Physical | USB serial, CH9102 bridge, `UART0` | BLE GATT |
-| Speed | 921600 baud recommended (unbenched; 115200 fallback) | 5 ms connection interval, measured |
+| Speed | 115200 baud, measured (921600 rejected for the bulk path, G-1's bench) | 5 ms connection interval, measured |
 | Direction | container-led, one outstanding *control* request (bulk is a windowed stream, §2.3) | device is peripheral; the console drives |
 | Payloads | framed verbs, bulk upload, multiplexed `ESP_LOG` | Pro2 GATT command/notify + HID input report `0x09` |
 | Failure | device keeps running (ADR-0008) | device keeps running (ADR-0008) |

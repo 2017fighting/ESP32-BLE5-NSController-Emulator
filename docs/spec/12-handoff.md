@@ -58,7 +58,7 @@ observed to ship safely.
 
 | # | Question | How | If it fails |
 | --- | --- | --- | --- |
-| 1 | Does the control link work at **921600** with `ESP_LOG` on the same wire? | flood a log and a bulk transfer at once; measure CRC retries | fall back to 115200 (G-1); the design does not change |
+| 1 | Does the control link work at **921600** with `ESP_LOG` on the same wire? | flood a log and a bulk transfer at once; measure CRC retries | **Answered** — no, and the fallback is taken: the logs cost zero corrupted frames at either baud, but the §2.7 window burst overruns the device's ≈14–20 KiB/s drain (13–15 retries/4 KB at 921600); **115200 survives** every size to the 65528 B maximum on both host stacks, so the design's baud is 115200 and nothing else changed (§2.1, `baud-bench.md`) |
 | 2 | Does the 256 B RX ring at a 100 Hz tick actually absorb the ACK window? | upload the largest plan and count stalls | raise the ring or shrink the window; `chunk_size` is advertised (`HELLO`), so the container adapts |
 | 3 | Does the **plan executor** hold timing against the console? | run a macro with the console connected and compare input-to-input latency at `LOG_MAXIMUM_LEVEL=INFO` | this is where ADR-0003 is either vindicated or shown to need a report-period change |
 | 4 | Does driving the **NFC state byte** make the console start polling? | flash the NFC path, place a tag, watch for `0x01/0x03` | this is the whole `AMIIBO` half; the earlier research says the console only probes `0x01/0x0C` today |
@@ -74,7 +74,7 @@ inference, or a decision to leave something unowned.
 
 | # | Gap | Where | Consequence if wrong |
 | --- | --- | --- | --- |
-| **G-1** | **921600 baud is a recommendation, not a measurement.** The CH9102 supports it and Linux's `cdc_acm` should drive it, but the board has never been run that fast with logs multiplexed | §2.1, §10.5 | fall back to 115200; nothing else changes |
+| **G-1** | **Closed.** 921600 measured and **rejected for the bulk path**: §2.7's back-to-back window overruns the 256 B RX ring at 92 KiB/s of line — 13–15 window retries per 4093 B, ~30 KB resent per 4 KB plan — while the failure is the rate, not the logs (the INFO build fails identically; multiplexed `ESP_LOG` cost zero corrupted frames at either baud). **115200 survives**: zero retries on every transfer to the 65528 B capacity maximum, on macOS and through the OrbStack-forwarded container path, host-side `bad-CRC` 0 everywhere, the link never reset. Retired by [Bench: 921600 with ESP_LOG on the same wire (G-1)](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/33) | §2.1, §10.5 | — |
 | **G-2** | **Closed.** The exact frame byte layout was fixed in prose and no byte diagram; it is now a byte table in the owning sections (§2.2, §2.4–§2.10, §3.2, §3.3). Retired by [Fix the exact frame byte layout (G-2) and how the locked spec absorbs it](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/19) — the first gap closed rather than carried | §2, §3 | — |
 | **G-3** | **The ~10 MB `storage` partition is unowned**, and `ota_1` is unused because OTA is out of scope | §7.8 | 13 MB of a 16 MB module sits idle; if nothing claims either, drop them |
 | **G-4** | **Is a macro run harmless against an absent console?** Unobservable — the base firmware has no `MACRO` mode | §9.4 | the container allows it and warns; a wrong answer is a console-side surprise, not corruption |

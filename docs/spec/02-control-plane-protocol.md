@@ -9,13 +9,22 @@ carries control and bulk upload alike (ADR-0006). Nothing else shares the wire e
 | | Value | Where it comes from |
 | --- | --- | --- |
 | Port | `UART0` — the CH9102 bridge, `/dev/ttyACM0` on Linux | `sdkconfig:1585` (`CONFIG_ESP_CONSOLE_UART_NUM=0`) |
-| Baud | **921600** recommended, **115200** fallback | #5; *recommendation, not a bench fact* |
+| Baud | **115200**, a bench fact | G-1's bench (#33) — `baud-bench.md` §2–§3; the tree default and the container default are this value |
 | Line state | DTR and RTS **deasserted**, on open and again in `finally` | `s3-bringup.md` §10 |
 | Console | `ESP_LOG` stays on this wire; `CONFIG_ESP_CONSOLE_NONE` is not set | `sdkconfig:1581` |
 
-The CH9102 supports up to 4 Mbps (WCH CH9102DS1), and Linux's stock `cdc_acm` drives it at
-high rate. The `115200` seen in bring-up was that session's *log* baud, not a link ceiling.
-**921600 needs bench verification before it is treated as settled** (known gap G-1).
+The CH9102 supports up to 4 Mbps (WCH CH9102DS1), and both Linux's `cdc_acm` and macOS's
+CDC driver drive 921600 cleanly — that was never the question. The measurement (#33,
+`docs/research/baud-bench.md`) is that the *device's* bulk drain is ≈14–20 KiB/s of wire
+bytes, so §2.7's back-to-back 4096 B window overruns the 256 B RX ring at 921600
+(13–15 window retries per 4093 B, ~30 KB resent per 4 KB plan, 0.1–0.3 KiB/s — degenerate,
+never corrupting: zero bad-CRC frames, the link never reset), while the 115200 line rate
+(11.5 KiB/s) self-throttles below the drain ceiling and every transfer to the 65528 B
+capacity maximum completes with **zero retries**. The logs are exonerated: the flood build
+and the INFO build fail identically at 921600, and multiplexed `ESP_LOG` cost **zero**
+corrupted frames at either baud. G-1 is closed; 921600 returns only if a later ticket
+raises the device-side absorption (#34 owns that decision), and `scripts/bench_baud_flood.py`
+re-measures it unchanged.
 
 ## 2.2 Framing
 
