@@ -14,7 +14,7 @@ opinion — the numbers that retire G-1:
   host-side bad-CRC count (a reply split by a log line is exactly what the
   shared TX lock exists to prevent, so this must read 0);
 - **the largest clean transfer** — the size ladder tops out at the largest plan
-  the advertised 65536-byte capacity accepts (12 + 11·5955 = 65517 B);
+  the advertised 65536-byte capacity accepts (12 + 11·5956 = 65528 B);
 - **link survival** — `boot_id` is re-read after every phase; one value means
   the link never reset.
 
@@ -52,9 +52,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bench_plan_executor import (  # noqa: E402
+    ACK_WINDOW,
+    BULK_ANNOUNCE,
+    BULK_CHUNK,
+    BULK_COMMIT,
     CHUNK_SIZE,
     ControlLink,
     Frame,
+    MODE_IDLE,
+    PLAN_COMMITTED,
     VERB_ERROR,
     VERB_HELLO,
     VERB_LOAD_PLAN,
@@ -63,14 +69,15 @@ from bench_plan_executor import (  # noqa: E402
     parse_status,
 )
 
-# §2.7: the ACK window is a constant of the chapter, not a HELLO field.
-ACK_WINDOW = 4096
+# The §2.7 ACK window is imported, not redefined: one home, next to the
+# CHUNK_SIZE the HELLO advertises.
 
 # The container's FrameIO defaults (container/ns2serial/frame_io.py) — the
 # deployment's patience, quoted here so the bench measures the real client.
 REQUEST_TIMEOUT = 2.0
 BULK_TIMEOUT = 5.0
 BULK_RETRIES = 3
+
 
 # plan.h, duplicated for synthesis (the C static_asserts pin the layout; the
 # Python compiler produces the same bytes — fixtures/plan is the shared proof).
@@ -81,11 +88,6 @@ PLAN_CAPACITY_BYTES = 65536
 # 12 + 11·n ≤ 65536 ⇒ n ≤ 5956.7 ⇒ 5956 records / 65528 B is the largest plan
 # the advertised capacity accepts (5957 would need 65539 B).
 PLAN_MAX_RECORDS = (PLAN_CAPACITY_BYTES - PLAN_HEADER_SIZE) // PLAN_RECORD_SIZE  # 5956
-
-MODE_IDLE = 0
-PLAN_COMMITTED = 1
-
-BULK_ANNOUNCE, BULK_CHUNK, BULK_COMMIT = 1, 2, 3
 
 
 class CommandError(RuntimeError):

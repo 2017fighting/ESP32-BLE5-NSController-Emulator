@@ -34,12 +34,10 @@ DEFAULT_PORT = "/dev/ttyACM0"
 #: The measured default (G-1's bench, #33 — `docs/research/baud-bench.md`):
 #: 115200 survives every bulk transfer to the capacity maximum on both host
 #: stacks; 921600 degenerated §2.7's window blast (13–15 retries per 4 KB,
-#: zero corruption) and is rejected for the bulk path.
+#: zero corruption) and is rejected for the bulk path. The wire itself is
+#: clean at 921600 — only the device-side bulk drain is not — so a custom
+#: image built faster is configuration (`CONTROLLER_BAUD`), never a default.
 DEFAULT_BAUD = 115200
-#: The rate a custom image may still run (the wire itself is clean at
-#: 921600; only the device-side bulk drain is not). Configuration, not a
-#: recommendation.
-FALLBACK_BAUD = 921600
 
 
 class TransportUnavailable(RuntimeError):
@@ -72,7 +70,6 @@ class SerialTransport(Protocol):
 __all__ = [
     "DEFAULT_BAUD",
     "DEFAULT_PORT",
-    "FALLBACK_BAUD",
     "SerialTransport",
     "TransportUnavailable",
 ]

@@ -84,11 +84,14 @@ menu "NSController Configuration"
 
     config CONTROL_UART_BAUD
         int "Control-plane UART baud rate"
-        default 921600
+        default 115200
         help
-            921600 is the spec's recommendation (spec §2.1, G-1); it is a
-            recommendation, not a measurement. Bench ticket #33 settles it, and
-            the documented fallback is 115200.
+            115200, a bench fact (spec §2.1, G-1 closed by #33): 921600
+            degenerates the §2.7 window blast (12-15 window retries per
+            4093 B, zero corruption) because the device's bulk drain is
+            ~14-20 KiB/s of wire bytes, and 115200 survives every transfer
+            to the 65528 B capacity maximum. The measurement is
+            docs/research/baud-bench.md.
 
     config CONTROL_UART_RX_PIN
         int "Control-plane UART RX pin (-1 = chip default)"

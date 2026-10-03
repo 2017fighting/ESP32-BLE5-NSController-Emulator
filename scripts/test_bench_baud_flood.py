@@ -35,19 +35,25 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from bench_baud_flood import (  # noqa: E402
+from bench_plan_executor import (  # noqa: E402
     ACK_WINDOW,
+    BULK_ANNOUNCE,
+    BULK_CHUNK,
+    BULK_COMMIT,
     CHUNK_SIZE,
+    VERB_ERROR,
+    VERB_LOAD_PLAN,
+)
+from bench_baud_flood import (  # noqa: E402
     CommandError,
     UploadStats,
     synthesize_plan,
     upload_plan_counted,
 )
 
-VERB_LOAD_PLAN = 2
-VERB_ERROR = 10
-BULK_ANNOUNCE, BULK_CHUNK, BULK_COMMIT = 1, 2, 3
-PLAN_TOO_LARGE = 6  # container/ns2device/model.py's ErrorCode.PLAN_TOO_LARGE
+# container/ns2device/model.py's ErrorCode.PLAN_TOO_LARGE, quoted locally so
+# the fake's fabricated refusal needs no container import.
+PLAN_TOO_LARGE = 6
 
 
 class FakeDevice:

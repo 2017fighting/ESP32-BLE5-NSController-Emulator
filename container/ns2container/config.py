@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..ns2device import PLAN_CAPACITY_BYTES
-from ..ns2serial import DEFAULT_BAUD, DEFAULT_PORT, FALLBACK_BAUD
+from ..ns2serial import DEFAULT_BAUD, DEFAULT_PORT
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 DEFAULT_STATIC_DIR = WEB_ROOT / "dist"
@@ -27,7 +27,6 @@ DEFAULT_STATIC_DIR = WEB_ROOT / "dist"
 class Settings:
     port: str = DEFAULT_PORT
     baud: int = DEFAULT_BAUD
-    fallback_baud: int = FALLBACK_BAUD
     http_host: str = "0.0.0.0"
     http_port: int = 8080
     macro_dir: Path = Path("/library/macros")

@@ -11,7 +11,7 @@ below.
 
 The one-line answer the ticket asked for: **921600 carries the control plane and the log
 flood without a single corrupted frame, but the §2.7 window blast into the 256 B RX ring
-degenerates every multi-window bulk transfer — 13–15 window retries per 4093 B, ~30 KB
+degenerates every multi-window bulk transfer — 12–15 window retries per 4093 B, ~30 KB
 resent per 4 KB plan, 0.1–0.3 KiB/s — and the failure is the rate, not the logs: the INFO
 build fails identically. 115200 survives everything, on both host stacks, at every size up
 to the 65528 B capacity maximum.**
@@ -31,7 +31,7 @@ ACKs, the permitted early ACK, and §2.8's silence on an untrusted frame — whi
 lost chunk surfaces as an ACK stall (a window retry) or as the offset-mismatch ACK the
 *next* chunk draws, never as a CRC error report.
 
-What is counted, and what each thing means:
+what each thing means:
 
 | Counter | Meaning |
 | --- | --- |
@@ -39,6 +39,13 @@ What is counted, and what each thing means:
 | `dup_acks` / `early_acks` | ACKs naming an offset already known / mid-window progress — the device-side loss signal, and §2.7's permitted early ACK respectively |
 | `rx_bad_crc` | segments with the right 7+len geometry whose CRC failed — a reply split by a log line; this is what the shared TX lock exists to make impossible |
 | `boot_ids` | one value per run means the link never reset |
+
+One deliberate divergence from `FrameIO.bulk`, recorded rather than hidden: the container
+resets its retry budget on **any** reply because its read loop also carries liveness (a
+dead link raises `TransportUnavailable` from below). This client has no layer below it, so
+the budget rides **no ACK progress since the last timeout** — identical counts on a
+lossy-but-alive wire, and a loud abort rather than an infinite resend loop on a wedged one
+(`test_exhausted_retries_raise` pins that).
 
 Two builds were flashed, both from `scripts/sdkconfig.flood` or the tree defaults: the
 **flood build** (`CONFIG_MCU_DEBUG=y`, `CONFIG_LOG_MAXIMUM_LEVEL=4` — the #21 §4.3 recipe:
@@ -56,25 +63,44 @@ commit verified against `STATUS` (`plan_hash` echo, `frame_count`, `IDLE`) after
 "blast" = the container's back-to-back window; "pace" is bench-only mechanism evidence
 (`--pace-ms`).
 
-| # | Image | Baud | Host | Send | flood-idle answered / bad-CRC | 4093 B: retries (resent) | 65528 B: retries | Throughput |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | INFO | 921600 | macOS | blast | 185/185, 0 | 15 (36.6 KB), 13 (30.7 KB) | not reached¹ | 0.1–0.3 KiB/s |
-| 2 | INFO | 921600 | macOS | blast, 1 s stall budget | 87/87, 0 | 13 (26.6 KB), 14 (28.9 KB) | — | 0.3 KiB/s |
-| 3 | flood | 921600 | macOS | blast | 189/189, 0 | 13, 14 (≈30 KB each) | not reached¹ | 0.1 KiB/s |
-| 4 | flood | 115200 | macOS | blast | 135/135, 0 | **0 (0 B)** ×2 | **0, 0** | 9.0–9.1 KiB/s |
-| 5 | INFO | 115200 | macOS | blast | 175/175, 0 | **0** ×2 | **0, 0** | 8.9 KiB/s |
-| 6 | flood | 115200 | OrbStack Linux² | blast | 149/149, 0 | **0** ×2 | **0, 0** | 8.8 KiB/s |
-| 7 | INFO | 921600 | macOS | pace 20 ms | 53/53, 0 | **0** | **0** | 7.7 KiB/s |
-| 8 | INFO | 921600 | macOS | pace 10 ms | 54/54, 0 | 3 (5.6 KB) | — (16358 B: 16) | 0.2 KiB/s |
-| 9 | INFO | 921600 | macOS | pace 5 ms | 54/54, 0 | 11 (23.5 KB) | — | 0.1 KiB/s |
+| # | Image | Baud | Host | Send | flood-idle answered / bad-CRC | 540 B: retries | 4093 B: retries (resent) | 65528 B: retries | Throughput |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | INFO | 921600 | macOS | blast | 185/185, 0 | **0, 0** | 15 (36.6 KB), 13 (30.7 KB) | not reached¹ | 0.1–0.3 KiB/s |
+| 2 | INFO | 921600 | macOS | blast, 1 s stall budget² | 87/87, 0 | — | 13 (26.6 KB), 14 (28.9 KB) | — | 0.3 KiB/s |
+| 3 | flood | 921600 | macOS | blast | 189/189, 0 | **0, 0** | 13, 14 (≈30 KB each) | not reached¹ | 0.1 KiB/s |
+| 4 | flood | 115200 | macOS | blast | 135/135, 0 | 0 | **0 (0 B)** ×2 | **0, 0** | 9.0–9.1 KiB/s |
+| 5 | INFO | 115200 | macOS | blast | 175/175, 0 | 0 | **0** ×2 | **0, 0** | 8.9 KiB/s |
+| 6 | flood | 115200 | OrbStack Linux³ | blast | 149/149, 0 | 0 | **0** ×2 | **0, 0** | 8.8 KiB/s |
+| 7 | INFO | 921600 | macOS | pace 20 ms⁴ | 53/53, 0 | 0 | **0** | **0** | 7.7 KiB/s |
+| 8 | INFO | 921600 | macOS | pace 10 ms⁴ | 54/54, 0 | — | 3 (5.6 KB) | — (16358 B: 16) | 0.2 KiB/s |
+| 9 | INFO | 921600 | macOS | pace 5 ms⁴ | 54/54, 0 | — | 11 (23.5 KB) | — | 0.1 KiB/s |
 
 ¹ The 5 s stall per retry means a degenerate 65528 B transfer would outlast the bench
-window; rows 1–3's 4093 B rows are complete and repeatable (six transfers across two builds,
-13–15 retries every time). Every degenerate transfer still **completed** — hash verified,
-link never reset — the cost is retries, not correctness.
+window; rows 1–3's 540 B and 4093 B rows are complete and repeatable (eight transfers
+across two builds and both instruments, 12–15 retries every time). Every degenerate
+transfer still **completed** — hash verified, link never reset — the cost is retries, not
+correctness.
 
-² `docker run --device "$NS2_PORT:/dev/ttyACM0" python:3.12-slim` — OrbStack's forwarded
+² A bench expedient, not a deployment behaviour: the container's 5.0 s bulk timeout, kept
+in rows 1 and 3, spends 5 s per stall and would outlast the bench window on a degenerate
+ladder; the 1 s budget completes the same rows inside it and counts the same stalls.
+
+³ `docker run --device "$NS2_PORT:/dev/ttyACM0" python:3.12-slim` — OrbStack's forwarded
 serial (§10.7's path), the container the deployment actually uses.
+
+⁴ `--pace-ms` is bench-only mechanism evidence for #34's question (documented in §4); it
+is not a protocol or client change — the deployment's uploader is the blast.
+
+**Instrument v2 (post-review re-measurement).** The two-axis review of this diff found a
+real defect in the bench client's reply matching: `wait_reply` returned on the first match
+of a read batch and **discarded the replies behind it** — batched bulk ACKs, so a dropped
+progress ACK could read as a stall that never happened. `ControlLink` now keeps every
+unmatched frame queued (`_take_reply`), and the discriminating rows were re-measured with
+the fixed instrument: at 921600 blast, 540 B stays clean (0 retries ×2) and 4093 B stays
+degenerate at **12 and 15 retries** (27.9 and 33.0 KB resent — the same band as rows 1–3,
+so the verdict was not an artifact of the defect); at 115200 the full ladder stays at
+**0 retries**, 9.2 KiB/s at 65528 B. Rows 4–6 were run with v1, whose defect could only
+*inflate* retries — a measured 0 cannot be inflated, so they stand.
 
 **Flood-idle latency** (`HELLO` blast, 2.0 s request timeout — the container's): at 921600,
 min/median/p95/max = 50.3–50.9 / 52.6–58.3 / 55.5–60.5 / 56.1–60.8 ms on both builds; at
@@ -113,12 +139,17 @@ was no ring pressure to answer.
 
 **The verdict, in the ticket's terms.** The baud that survives is **115200**. The retry
 count there is **0** across every transfer (30 bulk transfers across rows 4–7 including the
-65528 B maximum twice per row). The largest clean transfer is **65528 B** (5956 records,
-the capacity maximum). macOS and the OrbStack-forwarded Linux container path behave
-**identically** (rows 4 vs 6); no bare-Linux 921600 session exists to compare against —
-`s3-bringup.md`'s Linux facts are enumeration and 460800 flashing, no bulk — and §2.1's
-"Linux's `cdc_acm` drives it" was a claim about host capability, which is not where the
-failure is: the failure is device-side drain, on a wire any host can fill.
+65528 B maximum twice per row, plus the v2 re-verification). The largest clean transfer is
+**65528 B** (5956 records, the capacity maximum) — and per baud it reads: **at 115200,
+65528 B clean; at 921600 under the deployment's blast, 540 B clean and nothing larger**
+(4093 B is already degenerate); at 921600 paced at 20 ms/chunk, 65528 B is clean again —
+which is the mechanism, not a design option (§4). macOS and the OrbStack-forwarded Linux
+container path behave **identically** (rows 4 vs 6); no bare-Linux 921600 session exists
+to compare against — `s3-bringup.md`'s Linux facts are enumeration and 460800 flashing, no
+bulk — so the comparison the ticket asked for is answered with what exists (the forwarded
+deployment path, no difference), and §2.1's "Linux's `cdc_acm` drives it" was a claim about
+host capability, which is not where the failure is: the failure is device-side drain, on a
+wire any host can fill.
 
 ## 4. What this settles for the neighbours
 
@@ -141,10 +172,12 @@ failure is: the failure is device-side drain, on a wire any host can fill.
 | --- | --- |
 | `python3 scripts/test_bench_baud_flood.py` | **8 tests, OK** (§2.7 semantics + retry accounting against the fake device) |
 | `python3 -m unittest discover -s scripts -p 'test_*.py'` | 27 tests, OK |
-| `ruff check scripts/` | clean |
-| Builds: `scripts/sdkconfig.flood` @921600, same +115200, tree defaults @921600 and @115200 | 4 × `idf.py build` rc 0; `sdkconfig.h` verified per build; flashed with hash verified |
-| The nine bench rows above | 30 clean bulk transfers + 12 degenerate ones, all commits hash-verified, `boot_ids`=1 per run |
-| Board left on | the shipped tree defaults at the **new** default baud 115200 (this ticket's fallback), `LOG_MAXIMUM_LEVEL=3`, `MCU_DEBUG` off |
+| `python3 -m unittest discover -s container/tests -p 'test_*.py'` (the project venv) | 169 tests, OK |
+| `ruff check container/ scripts/` | clean |
+| Host C fixture (`cc -Werror` + fixture + `--selftest` + `--flip 50`, per `plan-fixture.yml`) | sha256 match, 5/5 flips detected |
+| Builds: `scripts/sdkconfig.flood` @921600, same +115200, tree defaults @921600 and @115200, tree defaults again after the Kconfig default flip | 6 × `idf.py build` rc 0; `sdkconfig.h` verified per build; flashed with hash verified |
+| The nine bench rows + the v2 re-measurement | 40 clean bulk transfers + 14 degenerate ones, all commits hash-verified, `boot_ids`=1 per run |
+| Board left on | the shipped tree defaults at the **new** default baud 115200 (Kconfig, `sdkconfig.defaults.esp32s3` and the container's `DEFAULT_BAUD` all carry it), `LOG_MAXIMUM_LEVEL=3`, `MCU_DEBUG` off |
 
 ## 6. Still open
 

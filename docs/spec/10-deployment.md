@@ -182,7 +182,7 @@ These are not optional and each one reads as a bug in six weeks:
 | **One process per port** | a second holder is a deployment error, surfaced as `Port busy`, never retried through |
 | **The port is configuration; the default is `/dev/ttyACM0`** | so a replugged board can be pinned by `/dev/serial/by-id` on Linux. There is no `/dev/serial/by-id` on macOS: the node is the USB Serial Number and is resolved, not globbed, from `SER=5C93063985` (§10.7) |
 | **On macOS the node is forwarded, never attached** | `orb usb attach` detaches the board from macOS and breaks host-side flashing; plain `--device` forwards it and leaves both sides usable (§10.7) |
-| **Baud 115200** | a bench fact (G-1 closed, #33): 921600 degenerates §2.7's window blast — 13–15 retries per 4 KB, zero corruption; `baud-bench.md` §3 |
+| **Baud 115200** | a bench fact (G-1 closed, #33): 921600 degenerates §2.7's window blast — 12–15 retries per 4 KB, zero corruption; `baud-bench.md` §3 |
 | **The container never writes the key anywhere** | ADR-0012 |
 | **No WiFi, no host networking, no privileged mode, no named volumes** | ADR-0002 |
 | **Log at `INFO` or lower for any timing work** | on a DEBUG build the report rate is set by the UART log budget, not by `CONFIG_HID_REPORT_INTERVAL` (§7.5) |

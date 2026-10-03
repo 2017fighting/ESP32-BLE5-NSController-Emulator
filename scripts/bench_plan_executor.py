@@ -259,21 +259,45 @@ class ControlLink:
         self.ser.write(encode_frame(TYPE_REQUEST, verb, payload))
         self.ser.flush()
 
+    def _take_reply(self, verb: int) -> Frame | None:
+        """Pop the first queued REPLY for `verb` (or any `ERROR`), if any.
+
+        Unmatched REPLY frames are *kept* on `self.pending`, never dropped:
+        bulk ACKs arrive batched (several replies per read), and a dropped
+        ACK reads as a device stall that never happened — the mirrored
+        `FrameIO` queues its replies for exactly this reason.
+        """
+        for i, frame in enumerate(self.pending):
+            if frame.type == TYPE_REPLY and (frame.verb == verb or frame.verb == VERB_ERROR):
+                return self.pending.pop(i)
+        return None
+
     def wait_reply(self, verb: int, timeout: float = 0.5) -> Frame:
         """Wait for the next REPLY for `verb` (or any `ERROR`), without sending.
 
         The same reply-matching rules as `request`: an `ERROR` (verb 10)
-        answers any request, and unsolicited EVENTs are kept on `self.pending`
-        for the caller instead of being dropped.
+        answers any request, and everything unmatched — events *and* replies
+        for other verbs — is kept on `self.pending` for the caller instead of
+        being dropped.
         """
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while True:
+            queued = self._take_reply(verb)
+            if queued is not None:
+                return queued
+            if time.monotonic() >= deadline:
+                break
+            # Consume the whole batch before matching: returning mid-loop
+            # would discard the replies that arrived behind the match.
+            match = None
             for frame in self._read_frames(min(deadline, time.monotonic() + 0.05)):
-                if frame.type != TYPE_REPLY:
+                if (match is None and frame.type == TYPE_REPLY
+                        and (frame.verb == verb or frame.verb == VERB_ERROR)):
+                    match = frame
+                else:
                     self.pending.append(frame)
-                    continue
-                if frame.verb == verb or frame.verb == VERB_ERROR:
-                    return frame
+            if match is not None:
+                return match
         raise TimeoutError(f"no reply to verb {verb} within {timeout}s")
 
     def request(self, verb: int, payload: bytes = b"", *, timeout: float = 0.5) -> Frame:

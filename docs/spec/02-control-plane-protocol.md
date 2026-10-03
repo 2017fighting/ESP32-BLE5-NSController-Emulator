@@ -17,7 +17,7 @@ The CH9102 supports up to 4 Mbps (WCH CH9102DS1), and both Linux's `cdc_acm` and
 CDC driver drive 921600 cleanly — that was never the question. The measurement (#33,
 `docs/research/baud-bench.md`) is that the *device's* bulk drain is ≈14–20 KiB/s of wire
 bytes, so §2.7's back-to-back 4096 B window overruns the 256 B RX ring at 921600
-(13–15 window retries per 4093 B, ~30 KB resent per 4 KB plan, 0.1–0.3 KiB/s — degenerate,
+(12–15 window retries per 4093 B, ~30 KB resent per 4 KB plan, 0.1–0.3 KiB/s — degenerate,
 never corrupting: zero bad-CRC frames, the link never reset), while the 115200 line rate
 (11.5 KiB/s) self-throttles below the drain ceiling and every transfer to the 65528 B
 capacity maximum completes with **zero retries**. The logs are exonerated: the flood build

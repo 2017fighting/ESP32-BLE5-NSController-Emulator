@@ -9,7 +9,6 @@ from __future__ import annotations
 from .api import (
     DEFAULT_BAUD,
     DEFAULT_PORT,
-    FALLBACK_BAUD,
     SerialTransport,
     TransportUnavailable,
 )
@@ -33,7 +32,6 @@ __all__ = [
     "COBS_DELIMITER",
     "DEFAULT_BAUD",
     "DEFAULT_PORT",
-    "FALLBACK_BAUD",
     "Frame",
     "FrameDecoder",
     "FrameTransport",
