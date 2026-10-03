@@ -67,6 +67,21 @@ void zc_consume(zc_ringbuf_t *rb, uint32_t len);
 bool zc_read_byte(zc_ringbuf_t *rb, uint8_t *out);
 
 /**
+ * @brief bytes currently in the ring, wrap-aware (occupancy, not contiguous).
+ *
+ * Distinct from what a producer can infer from `zc_reserve`'s return: that is
+ * the *contiguous* free run, capped at the wrap point, so an empty ring whose
+ * head sits on the last byte reads as one byte of space — capacity minus it
+ * would claim the ring is full. The #34 occupancy meter (§7.5) uses this.
+ */
+static inline uint32_t zc_used(const zc_ringbuf_t *rb)
+{
+  uint32_t head = rb->tx.head;
+  uint32_t tail = rb->rx.tail;
+  return (head >= tail) ? (head - tail) : (rb->capacity - (tail - head));
+}
+
+/**
  * @brief consumer batch peek across wrap-around boundary (without consuming).
  *
  * @param rb          Ring buffer

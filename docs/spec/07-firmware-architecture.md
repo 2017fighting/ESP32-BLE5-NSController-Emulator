@@ -55,8 +55,9 @@ discipline ADR-0006 implies: the framing knows about the noise, the transport do
 1. **A UART0 transport instance.** `transport_uart` is hardcoded to `UART_NUM_1` on GPIO4/5.
    The control plane needs `UART0` — the CH9102 bridge — where `ESP_LOG` already lives
    (`sdkconfig:1585`). Parameterise the port (or add a second instance) and **keep the RX
-   ring at 256 B or raise it deliberately**; the 100 Hz tick means a burst larger than the
-   ring is data loss, not backpressure (§7.5).
+   ring at 256 B or raise it deliberately** — the measurement says keep it: the 256 B ring
+   absorbs the §2.7 window at the design baud with margin (§7.5); the 100 Hz tick means a
+   burst larger than the ring is data loss, not backpressure (§7.5).
 2. **A shared TX lock, and logging through it.** `ESP_LOG` and control replies must not
    interleave (§2.2). Route log output through a hook that takes the same lock as reply
    transmission, and **suppress device logging to a bounded rate while a bulk transfer is
@@ -135,6 +136,23 @@ millisecond holds (ADR-0009) are what keep playback speed independent of all of 
 152 B of log per report against 11,520 B/s caps the rate at 75.8/s; 74.4/s was observed — 98%
 of that ceiling. **Any latency measurement from a DEBUG-logged run is a logging floor**, so
 timing work runs with `CONFIG_LOG_MAXIMUM_LEVEL=INFO` and the per-notification logs off.
+
+**The 100 Hz tick against the §2.7 ACK window, measured** (validation row 2, `rx-ring-bench.md`).
+The 256 B RX ring **absorbs the 4096 B window at the design baud with the window and ring
+both unchanged: 0 ACK stalls and 0 untrusted frames across every transfer to the 65,528 B
+capacity maximum**, on both host stacks — the macOS native path and the OrbStack-forwarded
+container path — with the real library's largest plan (杏仁巢穴宏, 3,356 B) among the rows.
+The tick's contribution is invisible because the line is the throttle: at 115200 the wire
+carries 11.5 KiB/s, below the device's ≈14–20 KiB/s drain, and the two rings behind the tick
+quantisation (the 256 B zc ring the parser drains and the 256 B driver ring behind it) ride
+out every window — the measured margin is a **driver-ring backlog high-water of ≤ 248/256 B**.
+Two facts the measurement added to the design's picture: a near-full zc ring is the blast's *steady
+state*, not a hazard (one 256 B chunk frame out-sizes the ring, and the producer's
+`pdMS_TO_TICKS(1)` is **0 ticks** at 100 Hz — a yield, not a block); and at 921600 the same
+instrument reads the cliff directly — hundreds of frames the decoder could not trust per
+large transfer and the driver backlog at its full 256/256 B. The device prints the per-transfer
+meter as one INFO line when staging closes (`staging closed: …`), which is why the `control`
+tag is the one INFO the deployment build does not silence.
 
 ## 7.6 The base firmware's disconnect path: one defect fixed, one tolerated
 

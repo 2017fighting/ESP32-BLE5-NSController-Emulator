@@ -11,6 +11,11 @@
 void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_WARN);
+    /* The control plane's one-per-bulk-transfer INFO line — the §7.5 RX-ring
+     * meter (bench #34) — is the only INFO the deployment build keeps: it is
+     * bounded (one line per upload, printed as staging closes) and it is
+     * exactly what a field report of a stalled transfer needs. */
+    esp_log_level_set("control", ESP_LOG_INFO);
     #ifdef CONFIG_MCU_DEBUG
         esp_log_level_set(LOG_APP, ESP_LOG_DEBUG);
         esp_log_level_set(LOG_BLE_GAP, ESP_LOG_DEBUG);

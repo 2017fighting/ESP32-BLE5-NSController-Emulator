@@ -36,8 +36,14 @@
  * - The ring is 256 B on purpose. Spec §7.1/§7.5 keep it here and §2.7 depends
  *   on it: at chunk_size = 256 one bulk chunk fills it and the device may ACK
  *   every chunk, which is a permitted outcome rather than a protocol change.
- *   A burst larger than the ring is data loss, not backpressure; whether the
- *   256 B ring absorbs the ACK window is bench ticket #34, not a code guess.
+ *   A burst larger than the ring is data loss, not backpressure. Benched
+ *   (#34, `rx-ring-bench.md`): the ring absorbs the §2.7 window at the design
+ *   baud with the ring and window unchanged — 0 ACK stalls and 0 untrusted
+ *   frames to the 65528 B capacity maximum, the driver-ring backlog never
+ *   above 248/256 B — while the ring running near full is the blast's steady
+ *   state, not a hazard (see the §7.5 meter on the transport handle; at
+ *   921600 the backlog hits its cap and frames are lost, which is why the
+ *   baud is 115200, #33).
  * - The CONTROL decoder is streaming, so it never needs a whole 512-byte frame
  *   contiguous (see control_parser.c).
  * - For the legacy EasyCon path the original reasoning still applies: host
@@ -52,6 +58,28 @@ static transport_handle_t g_transport;
 static zc_ringbuf_t       g_transport_rx_ringbuf;
 static uint8_t            g_transport_rx_buffer[TRANSPORT_RX_BUF_SIZE];
 static TaskHandle_t       g_transport_protocol_task = NULL;
+
+/* The §12.2-row-2 / §7.5 instrument, on the shared handle so any backend's
+ * RX producer can feed it; only the UART producer does today (the deployment
+ * path). */
+void transport_rx_ring_reset(void)
+{
+    g_transport.stats_rx_ring_hw = 0;
+    g_transport.stats_rx_spin = 0;
+    g_transport.stats_rx_backlog_hw = 0;
+}
+
+void transport_rx_ring_get(transport_rx_ring_stats_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    out->high_water = g_transport.stats_rx_ring_hw;
+    out->spins = g_transport.stats_rx_spin;
+    out->backlog_hw = g_transport.stats_rx_backlog_hw;
+    out->backlog_capacity = g_transport.stats_rx_backlog_cap;
+    out->capacity = g_transport_rx_ringbuf.capacity;
+}
 
 static protocol_instance_t *g_protocol_inst = NULL;
 

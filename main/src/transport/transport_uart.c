@@ -64,11 +64,35 @@ static void transport_uart_rx_task(void *arg)
   transport_handle_t   *tp  = ctx->tp;
 
   while (ctx->running) {
+    /* §7.5/#34: the driver backlog is the tier that actually drops bytes —
+     * sample its occupancy every pass; the high-water is the margin number. */
+    size_t backlog = 0;
+    uart_get_buffered_data_len(ctx->config.port, &backlog);
+    if ((uint32_t)backlog > tp->stats_rx_backlog_hw) {
+      tp->stats_rx_backlog_hw = (uint32_t)backlog;
+    }
+
     uint8_t *ptr = NULL;
     uint32_t avail = zc_reserve(tp->rx_buffer, &ptr);
     if (avail == 0) {
+      /* §7.5: the zc ring can only drop, never block — but under a §2.7 blast
+       * this is steady state, not danger (a chunk frame out-sizes the ring and
+       * `pdMS_TO_TICKS(1)` is 0 ticks at 100 Hz, so this is a yield): the
+       * driver ring behind us absorbs while the parser catches up. Counted as
+       * context; the hazard the bench grades is the backlog high-water above
+       * plus the decoder's silent drops (§2.8). */
+      tp->stats_rx_spin++;
       vTaskDelay(pdMS_TO_TICKS(1));
       continue;
+    }
+
+    /* §7.5/#34: occupancy high-water, wrap-aware. Not capacity minus
+     * `zc_reserve`'s return — that is the *contiguous* free run, and an empty
+     * ring whose head sits on the last byte would read as full (see
+     * `zc_used`). */
+    uint32_t used = zc_used(tp->rx_buffer);
+    if (used > tp->stats_rx_ring_hw) {
+      tp->stats_rx_ring_hw = used;
     }
 
     int len = uart_read_bytes(ctx->config.port, ptr, avail,
@@ -212,6 +236,8 @@ static int transport_uart_activate_rx(void *instance, zc_ringbuf_t *rb)
   tp->rx_buffer = rb;
   ctx->tp       = tp;
   ctx->running  = true;
+  /* The §7.5 meter's backlog denominator: this backend's driver-ring size. */
+  tp->stats_rx_backlog_cap = ctx->config.rx_buffer_size;
 
 #if CONFIG_IDF_TARGET_ESP32S3
   BaseType_t rc = xTaskCreatePinnedToCore(

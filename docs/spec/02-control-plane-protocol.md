@@ -23,8 +23,9 @@ never corrupting: zero bad-CRC frames, the link never reset), while the 115200 l
 capacity maximum completes with **zero retries**. The logs are exonerated: the flood build
 and the INFO build fail identically at 921600, and multiplexed `ESP_LOG` cost **zero**
 corrupted frames at either baud. G-1 is closed; 921600 returns only if a later ticket
-raises the device-side absorption (#34 owns that decision), and `scripts/bench_baud_flood.py`
-re-measures it unchanged.
+raises the device-side absorption — the 256 B ring's own measurement (#34, `rx-ring-bench.md`)
+found it sufficient at the design baud with the window unchanged (§7.5) — and
+`scripts/bench_baud_flood.py` re-measures it unchanged.
 
 ## 2.2 Framing
 

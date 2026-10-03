@@ -150,7 +150,7 @@ class ControlLink:
     container needs (ADR-0014) and the reason the boot wait is not a fixed sleep.
     """
 
-    def __init__(self, port: str, baud: int = 115200):
+    def __init__(self, port: str, baud: int = 115200, *, capture_noise: bool = False):
         import serial  # imported here so --help works without pyserial
 
         self.ser = serial.Serial()
@@ -164,6 +164,11 @@ class ControlLink:
         self.ser.rts = False
         self.buf = bytearray()
         self.pending: list[Frame] = []
+        # When set, every noise segment is also *kept* here (bench-only: the
+        # #34 ring instrument rides the log noise, and `bench_rx_ring` reads
+        # its line out of this capture). None keeps _read_frames allocation-
+        # free on the paths that do not care.
+        self.noise_log: list[bytes] | None = [] if capture_noise else None
         # Wire-level counters, for the bench phases that need to quote what the
         # wire carried (G-1): bytes read, `0x00`-delimited segments, segments
         # that were not frames (log lines and noise), frames that had the right
@@ -198,6 +203,16 @@ class ControlLink:
     def close(self) -> None:
         self.ser.close()
 
+    def _keep_noise(self, seg) -> None:
+        if self.noise_log is not None:
+            self.noise_log.append(bytes(seg))
+
+    def _record_noise(self, seg) -> None:
+        """One non-frame segment: counted, and captured — never silent."""
+        self.counters["noise"] += 1
+        self.counters["noise_bytes"] += len(seg)
+        self._keep_noise(seg)
+
     def _read_frames(self, deadline: float) -> list[Frame]:
         frames: list[Frame] = []
         while time.monotonic() < deadline:
@@ -215,14 +230,12 @@ class ControlLink:
                     if start > 0:
                         # Log text that ran ahead of the frame's leading
                         # delimiter — dropped, and counted, never silent.
-                        self.counters["noise"] += 1
-                        self.counters["noise_bytes"] += start
+                        self._record_noise(self.buf[:start])
                         del self.buf[:start]
                     break
                 block = bytes(self.buf[start + 1 : end])
                 if start > 0:
-                    self.counters["noise"] += 1
-                    self.counters["noise_bytes"] += start
+                    self._record_noise(self.buf[:start])
                 del self.buf[: end + 1]
                 if not block:
                     continue
@@ -230,17 +243,14 @@ class ControlLink:
                 try:
                     decoded = cobs_decode(block)
                 except ValueError:
-                    self.counters["noise"] += 1
-                    self.counters["noise_bytes"] += len(block)
+                    self._record_noise(block)
                     continue
                 if len(decoded) < 7:
-                    self.counters["noise"] += 1
-                    self.counters["noise_bytes"] += len(block)
+                    self._record_noise(block)
                     continue
                 ver, ftype, verb, plen = struct.unpack("<BBBH", decoded[:5])
                 if ver != PROTO_VER or len(decoded) != 7 + plen:
-                    self.counters["noise"] += 1
-                    self.counters["noise_bytes"] += len(block)
+                    self._record_noise(block)
                     continue
                 crc = struct.unpack("<H", decoded[5:7])[0]
                 if crc16_ccitt_false(decoded[:5] + decoded[7:]) != crc:

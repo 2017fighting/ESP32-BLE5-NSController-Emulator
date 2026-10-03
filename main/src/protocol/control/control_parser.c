@@ -32,6 +32,7 @@
 #include "protocol/control/control_mode.h"
 #include "protocol/control/control_protocol.h"
 #include "protocol/control/control_verbs.h"
+#include "transport/transport.h"
 
 /* §4.5: GPIO0 is the BOOT strap the CH9102's DTR also drives. */
 #define CONTROL_PANIC_GPIO 0
@@ -76,6 +77,11 @@ typedef struct {
 } control_parser_state_t;
 
 static control_parser_state_t s_control;
+
+/* The §7.5 meter's announce-time snapshot of the decoder's silent drops, so
+ * the staging-close line can report the transfer's delta (see the instrument
+ * comment in control_parser_parse_frame). Written by the protocol task only. */
+static uint32_t s_drops_at_open;
 
 /*
  * One lock for the state model, because three tasks reach it: the parser task
@@ -217,12 +223,65 @@ static parse_result_t control_parser_parse_frame(void *state, zc_ringbuf_t *rb,
         if (result == CONTROL_DEC_FRAME) {
             control_ctl_lock();
             control_fill_status(&s->ctl);
+            bool was_staging = s->ctl.stage != CONTROL_STAGE_NONE;
+            uint32_t staged_total = s->ctl.stage_total;
             rsp->len = (uint32_t)control_handle_request(&s->ctl, &s->dec.last, s->tx,
                                                         sizeof(s->tx));
             /* §2.2/§7.3 step 2: logging is suppressed to a bounded rate for as
-             * long as a staging buffer is open. */
-            control_link_set_bulk_active(s->ctl.stage != CONTROL_STAGE_NONE);
+             * long as a staging buffer is open. The post-state is read under
+             * the same lock: the panic task can abort staging concurrently
+             * (control_mode.c), and the meter must not miss that close. */
+            bool now_staging = s->ctl.stage != CONTROL_STAGE_NONE;
+            uint32_t stage_next_after = s->ctl.stage_next;
+            uint32_t drops_now = control_decoder_silent_drops(&s->dec);
+            control_link_set_bulk_active(now_staging);
             control_ctl_unlock();
+
+            /*
+             * The §7.5 ring instrument (§12.2 validation row 2, bench #34): one
+             * INFO line per bulk transfer, printed after the staging window
+             * closes so the §2.2 bulk rate limit no longer applies. What it
+             * reports, and why each number is the one that answers "does the
+             * ring absorb the §2.7 window":
+             *
+             *  - `ring hw` — the zc ring's occupancy high-water for this
+             *    transfer (the meter is reset on the announce that opened
+             *    staging, including one that supersedes an open transfer:
+             *    `stage_next == 0` is the fresh-announce mark). High under a
+             *    blast is the steady state, not a hazard — a chunk frame
+             *    out-sizes the ring.
+             *  - `spins` — producer iterations that found the ring full; the
+             *    yield-loop's volume, throughput context only.
+             *  - `backlog` — the UART driver RX backlog high-water against the
+             *    driver ring's own size: the tier that actually drops bytes.
+             *    ≪ capacity is the parser keeping pace; == capacity is the
+             *    §7.5 cliff.
+             *  - `drops` — the CONTROL decoder's silent-drop delta for the
+             *    transfer (§2.8): frames that arrived but could not be
+             *    trusted — a corrupted chunk, whatever the cause. This is the
+             *    number that separates "ring full but nothing lost" from the
+             *    data loss §7.5 warns about.
+             *
+             * Log text ahead of the reply's leading delimiter is exactly the
+             * noise §2.2 framing exists to survive, and the reply itself is
+             * never split (shared TX lock).
+             */
+            bool fresh_transfer = now_staging && stage_next_after == 0;
+            if (fresh_transfer) {
+                transport_rx_ring_reset();
+                s_drops_at_open = drops_now;
+            } else if (was_staging && !now_staging) {
+                transport_rx_ring_stats_t ring;
+                transport_rx_ring_get(&ring);
+                ESP_LOGI("control",
+                         "staging closed: total=%uB ring hw=%u/%u spins=%u "
+                         "backlog=%u/%u drops=%u",
+                         (unsigned)staged_total, (unsigned)ring.high_water,
+                         (unsigned)ring.capacity, (unsigned)ring.spins,
+                         (unsigned)ring.backlog_hw,
+                         (unsigned)ring.backlog_capacity,
+                         (unsigned)(drops_now - s_drops_at_open));
+            }
         } else if (result == CONTROL_DEC_REJECT) {
             control_ctl_lock();
             rsp->len = (uint32_t)control_reject(&s->ctl, s->dec.reject_code,
