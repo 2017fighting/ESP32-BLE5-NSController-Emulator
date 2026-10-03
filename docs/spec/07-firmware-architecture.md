@@ -13,8 +13,9 @@ Verified against the tree, not assumed:
 | UART backend | `main/src/transport/transport_uart.c` | `UART_NUM_1`, GPIO4/5 (`transport.c:100-105`, `main/Kconfig.projbuild`), 115200, a 10 ms-poll RX task |
 | USB-CDC backend | `main/src/transport/transport_usb_cdc.c` | no TX ring and no TX task; `zc_reset(tp->rx_buffer)` on re-attach (`:118-119`) |
 | Protocol seam | `main/src/protocol/protocol_router.c`, `easycon/*` | two layers: `SIMPLE`, `EASYCON` |
-| HID | `main/src/controller/hid_controller.c`, `hid_controller_pro2.c` | Pro2 report, front/back buffer, `controller_hid_commit` (`:233`), `pro2_report_init` (`:61`) — already the neutral template §4.6 needs |
-| Console protocol | `main/src/ns2_codec.c` | command handlers; `cmd_0x01_handler` (`:204-214`) handles **only** subcommand `0x0C` |
+| HID | `main/src/controller/hid_controller.c`, `hid_controller_pro2.c` | Pro2 report, front/back buffer, `controller_hid_commit` (`:233`), `pro2_report_init` (`:61`) — already the neutral template §4.6 needs; the `nfc_state` byte at `0x0C` is driven by `controller_ops_t.set_nfc_state` (#25) |
+| Console protocol | `main/src/ns2_codec.c` | command handlers; `cmd_0x01_handler` routes `0x03`/`0x04`/`0x05`/`0x06`/`0x14`/`0x15` to the NFC tag server (#25) and keeps `0x0C` as its constant |
+| NFC tag server | `main/src/controller/nfc_tag.c` | §4.9's state machine and §6.6's 540-byte byte-sink, portable and host-tested; the singleton, the report byte and `SCAN_ENDED` live in `control_parser.c` |
 | BLE | `main/src/gap.c`, `main/src/gatt.c` | NimBLE peripheral; GATT service with `0x000e` HID notify, `0x0014`/`0x0016` command write, `0x001a` notify |
 | Flows | `sdkconfig:1761` `CONFIG_FREERTOS_HZ=100`; `main/Kconfig.projbuild` `HID_REPORT_INTERVAL` default 15, range 5–100 | |
 
@@ -73,10 +74,15 @@ discipline ADR-0006 implies: the framing knows about the noise, the transport do
    for its `hold_ms`, calls `controller_hid_commit`, and on every exit path emits the neutral
    template (§4.6). It owns the loop-boundary neutral and the `LOOP_COMPLETED` rate limit
    (§3.3).
-6. **The NFC state machine and tag server**: drive HID report `0x09` byte `0x0C` (§4.9) and
-   answer `0x01/0x03`, `0x01/0x04`, `0x01/0x05`, `0x01/0x06`, `0x01/0x14`, `0x01/0x15`. The
-   device is a byte server here: it slices a 540-byte RAM buffer and does no crypto
-   (ADR-0011). Rename the report field `unknown_0x0c` → `nfc_state`.
+6. **The NFC state machine and tag server** — **done with #25.** `main/src/controller/
+   nfc_tag.c` drives HID report `0x09` byte `0x0C` (§4.9, now `nfc_state`) and answers
+   `0x01/0x03`, `0x01/0x04`, `0x01/0x05`, `0x01/0x06`, `0x01/0x14`, `0x01/0x15`. The device is a
+   byte server: it slices a 540-byte RAM buffer 64 bytes at a time and does no crypto
+   (ADR-0011). The module is portable C, so the placement/unplacement/gap ordering and the
+   page-wise slice are asserted on the host (`test/host/test_nfc_tag.c`); `control_parser.c`
+   owns the singleton, the report write and the `SCAN_ENDED` event, and `ns2_codec.c` routes the
+   subcommands. The console-facing offset space of `0x14`/`0x15` remains unverified — §6.6
+   carries the served shapes and names it as validation 5's question.
 7. **`CONFIG`**: `report_interval_ms` and `led`, volatile, applied at the boundary §2.9 fixes.
 8. **The Direction byte is already handled — no decision is left here.** `cmd_process()` flips
    response byte 1 from `0x91` to `0x01` centrally (`main/src/ns2_codec.c:656-658`), for
@@ -95,7 +101,9 @@ Nothing in this list needs a new transport, a new radio, or a filesystem.
 | --- | --- | --- |
 | Plan staging buffer | exactly the announced `LOAD_PLAN` length, up to `CONFIG_PLAN_CAPACITY_BYTES = 65536` | allocated on announce, freed on discard, replacement, or commit-then-replace |
 | Plan replay structure | the committed buffer itself (no copy) | until discarded or superseded |
-| Tag buffer | 540 B | until unplaced-and-discarded or replaced |
+| Tag staging buffer | 540 B | until the commit copies it (§4.3) or a panic stop forgets it |
+| Committed tag buffer | 540 B | the placement's own bytes; until replaced or the long panic stop |
+| Served tag buffer (`nfc_tag_t`) | 540 B | the volatile copy the console reads; a `0x14` write-back lands here and is discarded on unplace (§6.5) |
 | HID report front/back buffers | 63 B each | process lifetime |
 | Control-layer frame buffers | decoded `max_frame` (512 B) plus the COBS block and encoded wire form, up to `max_frame + max_frame/254 + 3` ≈ 517 B per direction (§2.2) | process lifetime |
 | NFC chunk buffer | one `0x15` response, ~75 B | process lifetime |
@@ -108,6 +116,10 @@ without PSRAM. Two measured facts bound the risk:
   only allocations worth counting.
 - **The largest real plan is 3,356 B** (§5.7), so the common case is three kilobytes, not
   64 KiB. `plan_capacity_bytes` is the ceiling, not the expectation.
+- **The tag's three 540-byte buffers are 1,620 B in total** — all statically allocated, none
+  per-transfer, and all dwarfed by the plan ceiling. The split exists so a `0x14` write-back
+  cannot corrupt the placement's own bytes (§6.5): the served copy is the console's to
+  scribble on, the committed copy is the container's.
 
 **PSRAM is present on this board and deliberately not enabled.** Nothing yet allocates from
 it, and an earlier revision that turned it on was reverted as unprompted scope creep with

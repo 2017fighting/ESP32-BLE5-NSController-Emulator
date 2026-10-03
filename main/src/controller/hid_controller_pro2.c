@@ -84,7 +84,7 @@ static void pro2_report_init(controller_hid_report_t *report) {
   hid_report->counter = 0;
   hid_report->power_info = 0x20;
   hid_report->unknown_0x0b = 0x38;
-  hid_report->unknown_0x0c = 0x00;
+  hid_report->nfc_state = 0x00;
   hid_report->headset_flag = 0x00;
   hid_report->motion_data_len = 0x28;
   /* One memcpy, from the same nine bytes the executor writes (§5.3): the state
@@ -98,6 +98,15 @@ static void pro2_set_state(controller_hid_report_t *report, const uint8_t state[
   if (report == NULL || report->report == NULL || state == NULL) return;
   hid_report_pro2_t *hid_report = (hid_report_pro2_t *)report->report;
   memcpy(&hid_report->buttons, state, 9);
+}
+
+/* §4.9's NFC state byte (#25). Separate from `pro2_set_state` because the nine
+ * plan bytes and this one byte have different owners: the executor writes the
+ * former, the NFC tag server drives the latter. */
+static void pro2_set_nfc_state(controller_hid_report_t *report, uint8_t state) {
+  if (report == NULL || report->report == NULL) return;
+  hid_report_pro2_t *hid_report = (hid_report_pro2_t *)report->report;
+  hid_report->nfc_state = state;
 }
 
 static void pro2_set_button_custom(controller_hid_report_t *report, uint8_t *data, size_t len) {
@@ -125,6 +134,7 @@ controller_hid_ops_t controller_pro2_ops = {
   .set_right_stick = pro2_set_right_stick,
   .set_button_custom = pro2_set_button_custom,
   .set_state = pro2_set_state,
+  .set_nfc_state = pro2_set_nfc_state,
   .next_report = pro2_next_report,
   .report_size = pro2_report_size,
 };

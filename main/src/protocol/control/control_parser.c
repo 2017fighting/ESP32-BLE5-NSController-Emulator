@@ -26,6 +26,7 @@
 #include "controller/controller.h"
 #include "controller/hid_controller.h"
 #include "controller/hid_controller_pro2.h"
+#include "controller/nfc_tag.h"
 #include "protocol/control/control_events.h"
 #include "protocol/control/control_executor.h"
 #include "protocol/control/control_link.h"
@@ -74,6 +75,9 @@ typedef struct {
     control_panic_t panic;
     control_executor_t ex;
     control_event_queue_t events;
+    /* #25: the tag the console is served from. Its `state` is the HID report's
+     * `nfc_state` byte and `STATUS.console_polling` at once (§4.9). */
+    nfc_tag_t nfc;
     uint8_t tx[CONTROL_WIRE_MAX];
 } control_parser_state_t;
 
@@ -177,13 +181,17 @@ static size_t control_event_queue_pop(control_event_queue_t *q, uint8_t *out, si
 /* ------------------------------------------------------------------- status */
 
 /*
- * The one field that is a live clock. `console_link` and `bond` are moved by
- * `control_notify_console_link()` / `control_notify_bond()`; the mode, plan, tag,
- * `last_error` and `last_stop_reason` fields are owned by the portable layer.
+ * The one field that is a live clock, and the one that is the NFC server's:
+ * `console_link` and `bond` are moved by `control_notify_console_link()` /
+ * `control_notify_bond()`; the mode, plan, tag, `last_error` and
+ * `last_stop_reason` fields are owned by the portable layer; `console_polling`
+ * is the NFC server's *console* level (`#25`) — distinct from the report byte,
+ * which is the mode's expression and lives in the HID layer (§4.9).
  */
 static void control_fill_status(control_state_t *st)
 {
     st->status.uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    st->status.console_polling = nfc_tag_polling(&s_control.nfc);
 }
 
 /* ------------------------------------------------------------------- layers */
@@ -473,8 +481,10 @@ static void executor_stop(void *ctx, uint8_t reason)
     (void)reason;
     /* §4.3: the neutral, the tag unplacement and the mode edge are
      * `control_mode_exit`'s; this is only the executor's half, so the
-     * container's STOP and the BOOT stop cannot drift. */
+     * container's STOP and the BOOT stop cannot drift. Every exit from `AMIIBO`
+     * lands here too, which is where the tag stops answering (#25). */
     control_executor_stop(&s_control.ex);
+    nfc_tag_unplace(&s_control.nfc);
     /* Every exit from the mode lands here — `STOP`, the BOOT stop, the fault
      * path and the `AMIIBO` exits — so the run's readout has one site. It prints
      * nothing when the meter was never armed. */
@@ -519,6 +529,56 @@ static void control_pair_unpair_effect(void *ctx)
     control_set_bond(&s_control.ctl, CONTROL_BOND_UNPAIRED);
 }
 
+/*
+ * The NFC tag server's two effects (#25). Both run with the control lock held
+ * (§7.2's callback discipline), so they touch the tag and the report and must
+ * not call back into the control layer.
+ *
+ * `state_changed` is the §4.9 mechanism: the report byte *is* the mode's
+ * physical expression, so every placement, unplacement and gap writes it. The
+ * scan-ended edge rides the control event queue instead, because it is a §3.3
+ * promise to the container rather than a byte the console reads — and it is
+ * emitted from the console's own command path, never from a `place`/`unplace`
+ * effect (`SCAN_ENDED` is "the console stopped polling", §6.5).
+ */
+static void nfc_state_changed(void *ctx, uint8_t state)
+{
+    (void)ctx;
+    if (g_hid_controller.ops != NULL && g_hid_controller.ops->set_nfc_state != NULL) {
+        g_hid_controller.ops->set_nfc_state(&g_hid_controller, state);
+    }
+}
+
+/* The same write, forced: used where the HID report has just been re-initialised
+ * under us, so "the byte did not change" is not the same as "the byte is on the
+ * wire" (§4.7's console re-subscribe). */
+static void nfc_assert_state_byte(void)
+{
+    if (g_hid_controller.ops != NULL && g_hid_controller.ops->set_nfc_state != NULL) {
+        g_hid_controller.ops->set_nfc_state(&g_hid_controller, nfc_tag_state(&s_control.nfc));
+    }
+}
+
+static void nfc_scan_ended(void *ctx)
+{
+    (void)ctx;
+    control_event_scan_ended(&s_control.ctl);
+}
+
+static void control_place_tag_effect(void *ctx, const uint8_t *tag, size_t len)
+{
+    (void)ctx;
+    /* `control_now_ms()` is the same clock the executor works on, so the §6.5 gap
+     * deadline cannot drift from the loop's. */
+    nfc_tag_place(&s_control.nfc, tag, len, control_now_ms());
+}
+
+static void control_unplace_tag_effect(void *ctx)
+{
+    (void)ctx;
+    nfc_tag_unplace(&s_control.nfc);
+}
+
 /* ---------------------------------------------------------- the executor task */
 
 /*
@@ -534,7 +594,12 @@ static void control_executor_task(void *arg)
     for (;;) {
         control_ctl_lock();
         control_fill_status(&s_control.ctl);
-        control_executor_step(&s_control.ex, &s_control.ctl, control_now_ms());
+        uint32_t now_ms = control_now_ms();
+        control_executor_step(&s_control.ex, &s_control.ctl, now_ms);
+        /* §6.5's gap: the new tag starts answering once the console has had a
+         * report period to sample the absent field. One tick late is an observed
+         * deadline, never an extended gap. */
+        nfc_tag_tick(&s_control.nfc, now_ms);
         control_ctl_unlock();
         vTaskDelayUntil(&last, pdMS_TO_TICKS(CONTROL_EXECUTOR_TICK_MS));
     }
@@ -558,6 +623,13 @@ void control_parser_init(void)
     };
     control_state_set_event_sink(&s_control.ctl, &sink);
     control_panic_init(&s_control.panic);
+    nfc_tag_init(&s_control.nfc);
+    const nfc_tag_events_t nfc_events = {
+        .ctx = NULL,
+        .state_changed = nfc_state_changed,
+        .scan_ended = nfc_scan_ended,
+    };
+    nfc_tag_set_events(&s_control.nfc, &nfc_events);
 
     if (!executor_neutral_matches_the_report()) {
         ESP_LOGE("control", "the executor's neutral does not match the Pro2 report's");
@@ -580,6 +652,8 @@ void control_parser_init(void)
         .ctx = NULL,
         .start_macro = executor_start_macro,
         .stop = executor_stop,
+        .place_tag = control_place_tag_effect,
+        .unplace_tag = control_unplace_tag_effect,
         .pair_unpair = control_pair_unpair_effect,
     };
     control_state_set_effects(&s_control.ctl, &fx);
@@ -616,6 +690,10 @@ void control_notify_console_link(uint8_t which, uint16_t reason)
          * `gap.c` still calls `hid_reset` for the report buffers; this is the
          * executor's half of the same edge. */
         control_executor_rearm(&s_control.ex, &s_control.ctl, control_now_ms());
+        /* `hid_reset` re-initialised the report buffers, which resets the NFC
+         * byte to `0x00`; a placed tag must go back on the wire or the console
+         * would never see it again (§4.9, #25). */
+        nfc_assert_state_byte();
     }
     control_ctl_unlock();
 }
@@ -625,6 +703,19 @@ void control_notify_bond(uint8_t bond)
     control_ctl_lock();
     control_set_bond(&s_control.ctl, bond);
     control_ctl_unlock();
+}
+
+size_t control_nfc_command(uint8_t subcmd, const uint8_t *payload, size_t len, uint8_t *out,
+                           size_t out_cap)
+{
+    /* The NFC state is shared with the `PLACE_AMIIBO`/`UNPLACE_AMIIBO` effects,
+     * which run under the control lock, and with `STATUS`'s `console_polling`,
+     * which is read under it — so the console's own commands take it too rather
+     * than introducing a second lock and a lock order. */
+    control_ctl_lock();
+    size_t n = nfc_tag_command(&s_control.nfc, subcmd, payload, len, out, out_cap);
+    control_ctl_unlock();
+    return n;
 }
 
 void control_notify_console_interval(int conn_itvl)

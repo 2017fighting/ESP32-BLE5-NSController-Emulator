@@ -82,7 +82,7 @@ typedef struct __attribute__((packed)) {
     uint8_t left_stick[3];      // 0x04 0x03 Left Analog Stick
     uint8_t right_stick[3];     // 0x07 0x03 Right Analog Stick
     uint8_t unknown_0x0b;       // 0x0B 0x01 Unknown Always 0x38?
-    uint8_t unknown_0x0c;       // 0x0C 0x01 Unknown Always 0x00?
+    uint8_t nfc_state;          // 0x0C 0x01 NFC processor state (§4.9); 0x00 idle
     uint8_t headset_flag;       // 0x0D 0x01 Headset Flags
     uint8_t motion_data_len;    // 0x0E 0x01 Motion Data Length Always 0x28
     uint8_t motion_data[0x28];  // 0x0F 0x28 Motion Data
@@ -95,7 +95,9 @@ static_assert(sizeof(hid_report_pro2_t) == 63);
  * left_stick ‖ right_stick layout). These pin that, and they are why the
  * off-by-one in the comments beside `left_stick`/`right_stick` (0x04/0x07) is
  * harmless: the fields below are the ones at 0x0B/0x0C, so the real offsets are
- * 0x02, 0x05 and 0x08 and the three are contiguous. */
+ * 0x02, 0x05 and 0x08 and the three are contiguous. The NFC state byte sits at
+ * 0x0C (§4.9) and is driven by `controller_ops_t.set_nfc_state` (#25), not by
+ * the executor's nine state bytes. */
 static_assert(offsetof(hid_report_pro2_t, buttons) == 0x02,
               "plan state byte 0 must land at report 0x02");
 static_assert(offsetof(hid_report_pro2_t, left_stick) == 0x05,
@@ -104,6 +106,8 @@ static_assert(offsetof(hid_report_pro2_t, right_stick) == 0x08,
               "plan state byte 6 must land at report 0x08");
 static_assert(offsetof(hid_report_pro2_t, unknown_0x0b) == 0x0B,
               "the NFC state byte follows the sticks with no padding");
+static_assert(offsetof(hid_report_pro2_t, nfc_state) == 0x0C,
+              "the NFC state byte is report offset 0x0C (§4.9)");
 
 extern controller_hid_ops_t controller_pro2_ops;
 

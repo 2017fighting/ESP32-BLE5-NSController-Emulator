@@ -1,0 +1,292 @@
+/*
+ * The NFC state machine and the tag server (spec §4.9, §6.5, §6.6, §7.3 step 6;
+ * issue #25). Portable C; the host suite links this file directly.
+ *
+ * See `nfc_tag.h` for the two halves that meet here, for the two *outputs* this
+ * module produces — the report byte (`nfc_tag_state`) and the console's level
+ * (`nfc_tag_polling`) — and for the shapes of the `0x14`/`0x15` payloads.
+ */
+
+#include "controller/nfc_tag.h"
+
+#include <string.h>
+
+/* The captured `0x05` flags at payload offsets 1-7
+ * (`switch2_controller_research/commands.md:33`), reproduced verbatim: the
+ * console only branches on the status byte at offset 0, and inventing values for
+ * fields nobody has decoded would be worse than echoing what was observed. */
+static const uint8_t nfc_status_flags[7] = {0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x00};
+
+static uint16_t nfc_rd_le16(const uint8_t *p)
+{
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+/* The report byte's one writer, so `state_changed` fires exactly when the byte
+ * moves and never on a polling change (§4.9). */
+static void nfc_set_state(nfc_tag_t *nfc, uint8_t state)
+{
+    if (nfc->state == state) {
+        return;
+    }
+    nfc->state = state;
+    if (nfc->events.state_changed != NULL) {
+        nfc->events.state_changed(nfc->events.ctx, state);
+    }
+}
+
+void nfc_tag_init(nfc_tag_t *nfc)
+{
+    if (nfc == NULL) {
+        return;
+    }
+    memset(nfc, 0, sizeof(*nfc));
+    nfc->state = NFC_STATE_IDLE;
+    nfc->polling = NFC_STATE_IDLE;
+}
+
+void nfc_tag_set_events(nfc_tag_t *nfc, const nfc_tag_events_t *events)
+{
+    if (nfc == NULL) {
+        return;
+    }
+    if (events == NULL) {
+        nfc_tag_events_t none = {0};
+        nfc->events = none;
+        return;
+    }
+    nfc->events = *events;
+}
+
+uint8_t nfc_tag_state(const nfc_tag_t *nfc)
+{
+    return nfc == NULL ? NFC_STATE_IDLE : nfc->state;
+}
+
+uint8_t nfc_tag_polling(const nfc_tag_t *nfc)
+{
+    return nfc == NULL ? NFC_STATE_IDLE : nfc->polling;
+}
+
+bool nfc_tag_placed(const nfc_tag_t *nfc)
+{
+    return nfc != NULL && nfc->placed;
+}
+
+void nfc_tag_identity(const nfc_tag_t *nfc, uint8_t out[NFC_TAG_UID_SIZE])
+{
+    if (nfc == NULL || out == NULL) {
+        return;
+    }
+    /* §6.3: the seven-byte UID is `UID[0..2]` then `UID[3..6]`; the byte between
+     * them is the NTAG215 `BCC0` check byte and is not part of the UID (§6.1). */
+    out[0] = nfc->tag[0];
+    out[1] = nfc->tag[1];
+    out[2] = nfc->tag[2];
+    out[3] = nfc->tag[4];
+    out[4] = nfc->tag[5];
+    out[5] = nfc->tag[6];
+    out[6] = nfc->tag[7];
+}
+
+void nfc_tag_place(nfc_tag_t *nfc, const uint8_t *tag, size_t len, uint32_t now_ms)
+{
+    if (nfc == NULL || tag == NULL || len != NFC_TAG_SIZE) {
+        return;
+    }
+    /* §6.5: the tag-absent gap on every tag change, the atomic replace included.
+     * If something was answering (or a previous gap was still open), the byte
+     * returns to `0x00` — and `0x05`/`0x15` answer "no tag" — until
+     * `nfc_tag_tick` promotes the new bytes. A first placement has nothing to
+     * remove, so it answers at once. */
+    bool had_a_tag = nfc->placed || nfc->staged;
+    memcpy(nfc->tag, tag, NFC_TAG_SIZE);
+
+    if (had_a_tag) {
+        nfc->placed = false;
+        nfc->staged = true;
+        nfc->gap_until_ms = now_ms + NFC_TAG_GAP_MS;
+        if (nfc->polling == NFC_STATE_TAG_DETECTED) {
+            nfc->polling = NFC_STATE_POLLING;
+        }
+        nfc_set_state(nfc, NFC_STATE_IDLE);
+        return;
+    }
+
+    nfc->placed = true;
+    nfc->staged = false;
+    /* The console's level follows a placement: if it was asking, the answer is
+     * now "tag detected". It does not create an ask where there was none — the
+     * report byte is what prompts the console, and it is separate (§4.9). */
+    if (nfc->polling == NFC_STATE_POLLING) {
+        nfc->polling = NFC_STATE_TAG_DETECTED;
+    }
+    nfc_set_state(nfc, NFC_STATE_TAG_DETECTED);
+}
+
+void nfc_tag_tick(nfc_tag_t *nfc, uint32_t now_ms)
+{
+    if (nfc == NULL || !nfc->staged) {
+        return;
+    }
+    if ((int32_t)(now_ms - nfc->gap_until_ms) < 0) {
+        return;
+    }
+    nfc->staged = false;
+    nfc->placed = true;
+    if (nfc->polling == NFC_STATE_POLLING) {
+        nfc->polling = NFC_STATE_TAG_DETECTED;
+    }
+    nfc_set_state(nfc, NFC_STATE_TAG_DETECTED);
+}
+
+void nfc_tag_unplace(nfc_tag_t *nfc)
+{
+    if (nfc == NULL || (!nfc->placed && !nfc->staged)) {
+        /* Unplacing nothing is a no-op: a `MACRO` exit runs through here too,
+         * and it must not disturb a console that is polling for a tag it has
+         * not been given. */
+        return;
+    }
+    nfc->placed = false;
+    nfc->staged = false;
+    /* The console is still asking; it just has nothing to scan now. */
+    if (nfc->polling == NFC_STATE_TAG_DETECTED) {
+        nfc->polling = NFC_STATE_POLLING;
+    }
+    /* The bytes stay in the buffer (§4.3 "tag data retained") and are
+     * overwritten by the next placement, which is what discards a `0x14`
+     * write-back. */
+    nfc_set_state(nfc, NFC_STATE_IDLE);
+}
+
+/* ------------------------------------------------------------------ 0x05 */
+
+static size_t nfc_reply_status(nfc_tag_t *nfc, uint8_t *out, size_t out_cap)
+{
+    if (out == NULL || out_cap < NFC_STATUS_RESPONSE_SIZE) {
+        return 0;
+    }
+    memset(out, 0, NFC_STATUS_RESPONSE_SIZE);
+
+    if (!nfc->placed) {
+        /* The console asked a get-status, so it is asking; with no tag in the
+         * field the answer is "polling". */
+        nfc->polling = NFC_STATE_POLLING;
+        out[0] = NFC_STATUS_NO_TAG;
+        return NFC_STATUS_RESPONSE_SIZE;
+    }
+
+    out[0] = NFC_STATUS_TAG_DETECTED;
+    memcpy(&out[1], nfc_status_flags, sizeof(nfc_status_flags));
+    out[8] = (uint8_t)NFC_TAG_UID_SIZE;
+    nfc_tag_identity(nfc, &out[9]);
+    nfc->polling = NFC_STATE_TAG_DETECTED;
+    return NFC_STATUS_RESPONSE_SIZE;
+}
+
+/* ------------------------------------------------------------- 0x15 / 0x14 */
+
+static size_t nfc_reply_read(nfc_tag_t *nfc, const uint8_t *payload, size_t len, uint8_t *out,
+                             size_t out_cap)
+{
+    if (payload == NULL || len < 2) {
+        return 0;
+    }
+    /* An unplaced tag answers nothing: the console reaches `0x15` only after a
+     * `0x05` that named a tag, so this is the gap's other half (§6.5). */
+    if (!nfc->placed) {
+        return 0;
+    }
+    uint16_t offset = nfc_rd_le16(payload);
+    if (offset >= NFC_TAG_SIZE) {
+        return 0;
+    }
+    size_t chunk = NFC_TAG_SIZE - offset;
+    if (chunk > NFC_TAG_READ_CHUNK) {
+        chunk = NFC_TAG_READ_CHUNK;
+    }
+    if (out == NULL || out_cap < 3u + chunk) {
+        return 0;
+    }
+    /* The captured response echoes the offset in its own little-endian pair
+     * behind a leading `0x00` (`switch2_controller_research/commands.md:66`). */
+    out[0] = 0x00;
+    out[1] = (uint8_t)(offset & 0xFFu);
+    out[2] = (uint8_t)(offset >> 8);
+    memcpy(&out[3], &nfc->tag[offset], chunk);
+    return 3u + chunk;
+}
+
+static void nfc_write_buffer(nfc_tag_t *nfc, const uint8_t *payload, size_t len)
+{
+    if (!nfc->placed) {
+        /* Discarded, not refused: the write is to a placement that no longer
+         * exists (§6.5). */
+        return;
+    }
+    if (payload == NULL || len < 4) {
+        return;
+    }
+    uint16_t offset = nfc_rd_le16(payload);
+    uint16_t want = nfc_rd_le16(&payload[2]);
+    size_t available = len - 4u;
+    if ((size_t)want > available) {
+        want = (uint16_t)available;
+    }
+    if (offset >= NFC_TAG_SIZE) {
+        return;
+    }
+    size_t n = NFC_TAG_SIZE - offset;
+    if (n > want) {
+        n = want;
+    }
+    /* §6.5: taken into the *volatile* tag while it is placed, so the placement is
+     * not lied to about what it wrote; dropped on unplace because the next
+     * placement is virgin by design. */
+    memcpy(&nfc->tag[offset], &payload[4], n);
+}
+
+/* -------------------------------------------------------------- the command */
+
+size_t nfc_tag_command(nfc_tag_t *nfc, uint8_t subcmd, const uint8_t *payload, size_t len,
+                       uint8_t *out, size_t out_cap)
+{
+    if (nfc == NULL) {
+        return 0;
+    }
+    switch (subcmd) {
+    case NFC_CMD_START_POLLING:
+        /* §3.2: the console is asking. A tag already in the field is the answer;
+         * with none (including during a gap) the level is `polling`. The report
+         * byte is untouched — a poll in `IDLE`/`MACRO` must not look like
+         * `AMIIBO` (§4.9). */
+        nfc->polling = nfc->placed ? NFC_STATE_TAG_DETECTED : NFC_STATE_POLLING;
+        return 0;
+    case NFC_CMD_STOP_POLLING: {
+        /* §3.3/§6.5: the console stopped asking. That is `SCAN_ENDED`, and it is
+         * what the container rotates on — but only for a tag that was in the
+         * field to be scanned. */
+        bool was_active = nfc->polling != NFC_STATE_IDLE;
+        bool had_tag = nfc->placed;
+        nfc->polling = NFC_STATE_IDLE;
+        if (was_active && had_tag && nfc->events.scan_ended != NULL) {
+            nfc->events.scan_ended(nfc->events.ctx);
+        }
+        return 0;
+    }
+    case NFC_CMD_GET_STATUS:
+        return nfc_reply_status(nfc, out, out_cap);
+    case NFC_CMD_READ_DEVICE:
+        /* The captured exchange is an ACK with no payload
+         * (`switch2_controller_research/commands.md:64`). */
+        return 0;
+    case NFC_CMD_WRITE_BUFFER:
+        nfc_write_buffer(nfc, payload, len);
+        return 0;
+    case NFC_CMD_READ_BUFFER:
+        return nfc_reply_read(nfc, payload, len, out, out_cap);
+    default:
+        return 0;
+    }
+}

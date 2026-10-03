@@ -12,6 +12,7 @@
 
 #include "protocol/protocol.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -47,6 +48,16 @@ size_t control_parser_poll_event(uint8_t *out, size_t cap);
  * and `bond` is §3.2's. */
 void control_notify_console_link(uint8_t which, uint16_t reason);
 void control_notify_bond(uint8_t bond);
+
+/*
+ * #25: the console's command `0x01` NFC subcommands `0x03`/`0x04`/`0x05`/`0x06`/
+ * `0x14`/`0x15` (§6.6). `payload` is the bytes after the 8-byte command header
+ * and `len` is how many arrived. Returns the response length written to `out`,
+ * or 0 when the subcommand has no response or is not one the tag server owns.
+ * Called from the GATT write callback, so it takes the control lock itself.
+ */
+size_t control_nfc_command(uint8_t subcmd, const uint8_t *payload, size_t len, uint8_t *out,
+                           size_t out_cap);
 
 /*
  * The console's own connection interval, in 1.25 ms units, straight from the BLE

@@ -43,8 +43,15 @@ them can be settled before any code is written.
 
 **Stage 3 — `AMIIBO`.**
 
-1. The NFC state machine and tag server (§7.3 step 6) — these are firmware changes with no
-   protocol surface, and they are the largest single unknown left.
+1. ~~The NFC state machine and tag server (§7.3 step 6) — these are firmware changes with no
+   protocol surface, and they are the largest single unknown left.~~
+   **Done.** `main/src/controller/nfc_tag.c` is the portable state machine and byte-sink, the
+   ESP-IDF glue in `control_parser.c` owns the report byte and `SCAN_ENDED`, and
+   `ns2_codec.c` routes the six subcommands. Placement, unplacement, the §6.5 gap, the polling
+   edges and the page-wise slice are asserted on the host (`test/host/test_nfc_tag.c`). What is
+   *not* settled is the console-facing offset space of `0x14`/`0x15` (§6.6), which needs the
+   console — that is validation 5's question, and the reason the bench gate is the next step
+   rather than this one.
 2. ~~**The sealing module and the container's amiibo index** (§6.4, §8.5), which can be built and
    unit-tested **before** the firmware serves anything: a sealed tag is verifiable offline
    against a library tag's HMACs.~~
@@ -107,9 +114,11 @@ Ranked, with the cost of being wrong:
 
 1. **The NFC path's usefulness** (G-6, validation 4–6). If the console does not start polling
    when the NFC state byte moves, `AMIIBO` stops at the first step and the feasibility branch
-   opens. This is the design's largest single risk and it is *unbuilt*, not merely unverified.
-   Mitigation: it is stage 3, after a complete `MACRO` half, and the fallbacks are already
-   documented.
+   opens. This is still the design's largest single risk; it is no longer *unbuilt* (#25 landed
+   the state machine and the tag server), so what remains is the measurement — and if the
+   console's own offset space differs from the plain byte offsets the server uses (§6.6), that
+   is a small mapping fix rather than a redesign. Mitigation: it is stage 3, after a complete
+   `MACRO` half, and the fallbacks are already documented.
 2. **The baud rate** (G-1). Cheap to be wrong; a config change.
 3. **~~The report period's adequacy~~** (validation 3) — **retired.** Measured against a real
    console at `INFO`: the period is 10.00 ms, the console sees the plan's holds on that grid with

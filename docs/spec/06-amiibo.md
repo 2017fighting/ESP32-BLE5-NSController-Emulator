@@ -157,6 +157,12 @@ container                          device                         console
   proven console requirement.** Something has to leave the field for repeated scanning to work
   on NS1 (emuiibo's manual disconnect exists for exactly that), so a gap is the safe superset;
   whether the NS2 needs it is unobserved (G-6).
+- **The gap is held, not instantaneous.** The state byte is `0x00` and `0x05`/`0x15` answer
+  nothing for **two report periods — 20 ms at the 10 ms grid** (`NFC_TAG_GAP_MS`,
+  `main/src/controller/nfc_tag.c`) — because a gap the reporter can lose in a buffer swap is
+  not a guarantee. The deadline is absolute milliseconds on the control task's clock, so a late
+  tick observes the gap as over rather than extending it. A **first** placement has nothing to
+  remove and opens no gap; only a tag *change* does.
 - **The gap lives inside `AMIIBO`**, so `AMIIBO` is *presents one tag at a time* rather than
   "always a tag placed". The control plane never sees a mode oscillation: the rotation is one
   atomic replace.
@@ -185,9 +191,34 @@ Almost nothing, deliberately:
   drive rotation.
 
 **Firmware work this implies** (chapter 7): the NFC subcommands `0x03`/`0x04`/`0x05`/`0x06`/
-`0x14`/`0x15` under command `0x01` are stubs today (`main/src/ns2_codec.c:204-214` handles
-only `0x0C`), and byte `0x0C` of the report is hardcoded `0x00`. Both are prerequisites for
-`AMIIBO`, and both are firmware changes rather than protocol changes.
+`0x14`/`0x15` under command `0x01` were stubs (`main/src/ns2_codec.c:204-214` handled
+only `0x0C`) and byte `0x0C` of the report was hardcoded `0x00`. **Both landed with #25**,
+and they are firmware changes rather than protocol changes:
+
+- The server is `main/src/controller/nfc_tag.c`, a portable state machine asserted on the host
+  (`test/host/test_nfc_tag.c`); `control_parser.c` owns the singleton, the report byte and the
+  `SCAN_ENDED` event, and `ns2_codec.c` routes the subcommands to it.
+- **The read slice is 64 bytes** — 16 pages — so the whole tag is nine round trips (§7.7). The
+  served shapes are the captured ones
+  (`switch2_controller_research/commands.md:64-66`):
+
+  | Command | Request payload | Response payload |
+  | --- | --- | --- |
+  | `0x15` read buffer | `offset` u16 (LE) | `0x00` · `offset` u16 (LE) · up to 64 bytes of the image |
+  | `0x14` write buffer | `offset` u16 (LE) · `len` u16 (LE) · `len` bytes | — (taken into the volatile tag) |
+  | `0x05` get status | — | 61 B: status `0x09` + the captured flags + `0x07` + the 7-byte UID; all-zero beyond the status `0x00` when no tag is placed |
+  | `0x03`/`0x04`/`0x06` | — | — (ACK) |
+
+- **The console-facing *offset* space is still unverified.** The canonical capture reads at
+  wire offset `0x46` and the returned data opens on the image's static-lock/capability bytes at
+  tag-image offset `0x0A` with the first 16-bit word transposed, so the wire offset is not a
+  tag-image byte offset. This is validation 5's question (§12.2, [Bench: does the console
+  poll a placed tag and read all 540 bytes?](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/36));
+  the server serves plain byte offsets until the bench says otherwise.
+- The state byte is the `nfc_state` field of `hid_report_pro2_t` (§4.9), written into both report
+  buffers by `controller_ops_t.set_nfc_state`. `STATUS.console_polling` is the server's *other*
+  output — the console's own level, which moves on `0x03`/`0x04`/`0x05` in any mode, where the byte
+  moves only on a placement. §4.9 carries why they are two signals rather than one.
 
 ## 6.7 Key policy
 

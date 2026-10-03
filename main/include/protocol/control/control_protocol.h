@@ -46,19 +46,19 @@ extern "C" {
 #define CONTROL_PLAN_CAPACITY_BYTES 65536u
 #define CONTROL_PLAN_SLOTS 1u
 
-/* §2.6 `features` bits. A bit is a promise the build can honour end to end, and
- * the physical halves — the executor (#24), the tag server (#25) and the
- * applied-CONFIG effect (still a stub) — are `control_effects_t` no-ops on this
- * build, so the honest advertisement is "nothing yet". #24/#25 flip their bits
- * as their effects land, one line each. `MACRO` is on as of #24: the executor
- * walks a committed plan, owns the neutral, and refuses an arm it cannot honour
- * (so `START` never enters `MACRO` without a running walk). `CONFIG` stays off
- * even though the verb is accepted, because its applied effect is still a stub. */
+/* §2.6 `features` bits. A bit is a promise the build can honour end to end. The
+ * physical halves are `control_effects_t` callbacks: `MACRO` is on as of #24 (the
+ * executor walks a committed plan, owns the neutral, and refuses an arm it cannot
+ * honour, so `START` never enters `MACRO` without a running walk) and `AMIIBO` as
+ * of #25 (the NFC tag server answers the console's `0x01` subcommands from a
+ * placed 540-byte image and drives the report's `nfc_state` byte). `CONFIG` stays
+ * off even though the verb is accepted, because its applied effect is still a
+ * stub. */
 #define CONTROL_FEATURES_NONE 0x0000u
 #define CONTROL_FEATURE_MACRO 0x0001u
 #define CONTROL_FEATURE_AMIIBO 0x0002u
 #define CONTROL_FEATURE_CONFIG 0x0004u
-#define CONTROL_FEATURES (CONTROL_FEATURE_MACRO)
+#define CONTROL_FEATURES (CONTROL_FEATURE_MACRO | CONTROL_FEATURE_AMIIBO)
 
 /* §2.6 `fw_version` is 4x u8 major.minor.patch.build. `build` is free for a
  * monotonic per-flash counter later. */

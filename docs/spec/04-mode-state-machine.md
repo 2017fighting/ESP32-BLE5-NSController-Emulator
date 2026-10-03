@@ -192,6 +192,14 @@ index out of range, commit check mismatch). It must be **committed and transmitt
 merely written into the back buffer (`controller_hid_commit`,
 `main/src/controller/hid_controller.c:233`).
 
+**`UNPLACE_AMIIBO` is the one mode change that emits no release (settled by #25).** That is
+§4.3's table rather than an omission: `AMIIBO` holds no inputs — the executor is stopped for
+as long as a tag is placed — so the last write into the mode is already the neutral, and the
+invariant above ("no state in which a mode has ended and inputs are still held") is satisfied
+without another report. Emitting one would add a second effect to a verb that §4.3 defines as
+a tag operation, which is the thing §4.4 exists to prevent. #24 raised the tension and left it
+here; this is the answer, and it changes no code.
+
 The template is `pro2_neutral_state` (`main/src/controller/hid_controller_pro2.c`), the nine
 state bytes in the report's own layout: it zeroes the button bytes, centres both sticks at
 `PRO2_STICK_CENTER` (`0x800`), and leaves byte `0x0C` at `0x00`. `pro2_report_init` initialises
@@ -274,11 +282,31 @@ not a macro, not a placed tag. That is the container-re-uploads contract, and it
 
 Not protocol detail for its own sake — it is the *mechanism* behind exclusivity.
 
-`hid_report_pro2_t` byte `0x0C` (`main/include/controller/hid_controller_pro2.h:84`, named
-`unknown_0x0c`) is the **NFC state**, `0x00` = idle, as documented in
-`switch2_controller_research/hid_reports.md:178`. Today the firmware hardcodes `0x00`, which
-is **correct for `IDLE` and `MACRO`** and is precisely why `AMIIBO` must be the only mode
-that drives it.
+`hid_report_pro2_t` byte `0x0C` (`main/include/controller/hid_controller_pro2.h`, the
+`nfc_state` field) is the **NFC state**, `0x00` = idle, as documented in
+`switch2_controller_research/hid_reports.md:178`. It is `0x00` in `IDLE` and `MACRO` and `0x02`
+while a tag is placed in `AMIIBO`, and it is driven only by a placement or unplacement
+(`nfc_tag.c` → `controller_ops_t.set_nfc_state`, into both report buffers). **That is what makes
+it the mode's physical expression** and why `AMIIBO` is the only mode that drives it — a console
+that polls in `IDLE` or `MACRO` moves `STATUS.console_polling` and must not touch the byte.
+
+**The byte and `console_polling` are one vocabulary and two signals (settled by #25).** Both use
+`IDLE`/`POLLING`/`TAG_DETECTED` (§3.2), but they are read from different sides:
+
+- The **byte** says what the *device* is doing — `0x00` unless a tag is placed. Its reachable
+  values are therefore `0x00` and `0x02`; `0x01` is legal in the vocabulary and never on the wire,
+  because a tag being placed is the only `AMIIBO` state.
+- **`console_polling`** says what the *console* is doing — `0x03` sets `POLLING`,
+  `0x05` asks again, `0x04` returns it to `IDLE`. A game can open its amiibo menu while the device
+  is in `IDLE` or `MACRO`, so it cannot be gated on the mode, and §3.2's rotation key reads it.
+
+Collapsing them would either lie about the mode or lose the container's `SCAN_ENDED`/rotation edge.
+
+**A console re-subscribe re-asserts the byte.** `gap.c`'s `0x000e` subscribe handler calls
+`hid_reset`, which re-initialises both report buffers and so resets `nfc_state` to `0x00`; the
+`RESUBSCRIBED` edge therefore writes the server's current byte back (`control_parser.c`). Without
+that, a tag placed across a sleep/wake would vanish from the wire until the next placement — the
+same edge §4.7 already re-arms the neutral on.
 
 Consequences worth writing down:
 
@@ -286,7 +314,6 @@ Consequences worth writing down:
   and it is in the report the console samples every ~15 ms. "Only one at a time" is a property
   of the wire rather than a policy the device enforces.
 - It fixes the console-observability of a mode change at within one report interval.
-- It names the field's real meaning, so the rename to `nfc_state` is part of the firmware
-  change (chapter 7). The value semantics used here are the ones in the earlier NFC research
-  (`0x01` polling, `0x02` tag detected); their exact encoding follows
-  `switch2_controller_research/hid_reports.md` when the firmware implements it.
+- The field's name is `nfc_state` rather than `unknown_0x0c` as of #25, and the value semantics
+  are the earlier NFC research's (`0x01` polling, `0x02` tag detected) — the low three values of
+  `switch2_controller_research/hid_reports.md:178`'s `0x00`–`0x07` range, given meaning.

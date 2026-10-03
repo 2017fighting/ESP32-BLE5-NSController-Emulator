@@ -201,10 +201,21 @@ int read_memory(uint32_t addr, size_t read_len, uint8_t* out_buffer) {
 
 // ******** COMMAND HANDLERS ********
 
+/* §6.6's tag server returns at most a 61-byte `0x05` status or a 75-byte `0x15`
+ * page read, so the response buffer below is generous; the limit is the
+ * CANONICAL one `cmd_process` validates against. */
+#define CMD_PROCESS_MAX_RSP_DATA_LEN 0x78
+
 g_cmd_handler_entry_t* g_cmd_handlers = NULL;
 
 /**
  * @brief NFC cmd handler
+ *
+ * `0x0C` is the PN7160 capability probe and stays a constant here (§6.6). Every
+ * other subcommand is the tag server of #25: `0x03`/`0x04`/`0x05`/`0x06`/`0x14`/
+ * `0x15` are served by `control_nfc_command()` against the placed 540-byte tag.
+ * The response Direction byte is not this handler's business: `cmd_process()`
+ * rewrites header byte 1 to `0x01` for every command it dispatches (§7.3 step 8).
  */
 static uint8_t cmd_0x01_handler(const uint8_t subcmd, const uint16_t payload_len, 
     const uint8_t* data_in, uint8_t* data_out) {
@@ -216,8 +227,24 @@ static uint8_t cmd_0x01_handler(const uint8_t subcmd, const uint16_t payload_len
             data_out[2] = 0x50;
             data_out[3] = 0x10;
             return 0x04;
-        default:
-            break;
+#ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+        default: {
+            /* `data_in` is the 8-byte command header followed by the payload;
+             * `payload_len` is the whole mbuf, whose leading NS2_DATA_EMPTY_LEN
+             * bytes are wrapper, not command. The request's own `Data Length`
+             * (header byte 5) is authoritative and is clamped by what actually
+             * arrived. */
+            size_t avail = (payload_len > NS2_DATA_EMPTY_LEN + 8u)
+                               ? (size_t)payload_len - NS2_DATA_EMPTY_LEN - 8u
+                               : 0u;
+            size_t len = data_in[5];
+            if (len > avail) {
+                len = avail;
+            }
+            return (uint8_t)control_nfc_command(subcmd, data_in + 8, len, data_out,
+                                                CMD_PROCESS_MAX_RSP_DATA_LEN);
+        }
+#endif
     }
     return 0x00;
 }
@@ -606,8 +633,6 @@ cmd_handler cmd_handler_find(uint8_t cmd) {
     HASH_FIND(hh, g_cmd_handlers, &cmd, sizeof(uint8_t), cur);
     return cur != NULL ? cur->handler : NULL;
 }
-
-#define CMD_PROCESS_MAX_RSP_DATA_LEN 0x78
 
 int cmd_process(pro2_gatt_rsp_t* rsp, uint8_t* data_in, uint16_t payload_len) {
     uint8_t rsp_magic[4] = { 0x10, 0x78, 0x00, 0x00 };

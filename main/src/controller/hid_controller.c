@@ -287,6 +287,22 @@ static void controller_set_report_observer_impl(controller_handle_t *ctrl,
     ctrl->report_observer_ctx = ctx;
 }
 
+/* #25: the NFC state byte of §4.9. Both buffers are written, not just the back
+ * one: the reporter swaps once per commit, so a state that only reached the back
+ * buffer would be one report period stale on the wire — and the console samples
+ * this byte continuously to decide whether a tag is in the field. */
+static void controller_set_nfc_state_impl(controller_handle_t *ctrl, uint8_t state) {
+    if (ctrl == NULL || ctrl->hid_ops == NULL || ctrl->hid_ops->set_nfc_state == NULL) {
+        return;
+    }
+    if (ctrl->buffer.front_buffer != NULL) {
+        ctrl->hid_ops->set_nfc_state(ctrl->buffer.front_buffer, state);
+    }
+    if (ctrl->buffer.back_buffer != NULL) {
+        ctrl->hid_ops->set_nfc_state(ctrl->buffer.back_buffer, state);
+    }
+}
+
 const controller_ops_t controller_ops = {
     .name           = "controller",
     .init           = controller_init_impl,
@@ -298,4 +314,5 @@ const controller_ops_t controller_ops = {
     .hid_reset      = controller_hid_reset_impl,
     .commit_idle    = controller_commit_idle_impl,
     .set_report_observer = controller_set_report_observer_impl,
+    .set_nfc_state  = controller_set_nfc_state_impl,
 };

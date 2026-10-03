@@ -76,6 +76,10 @@ typedef struct {
      * report. One op rather than three setters because the record's layout *is*
      * the report's layout, and splitting it would invite the two to drift. */
     void (*set_state)(controller_hid_report_t *report, const uint8_t state[9]);
+    /* The NFC state byte (#25, §4.9): report offset 0x0C, driven by the NFC tag
+     * server as a placement, an unplacement or the tag-absent gap moves it. NULL
+     * for a HID type that has no NFC — a no-op, so no caller needs a type check. */
+    void (*set_nfc_state)(controller_hid_report_t *report, uint8_t state);
     uint8_t* (*next_report)(controller_hid_report_t *report);
     size_t (*report_size)(void);
 } controller_hid_ops_t;
@@ -101,6 +105,10 @@ typedef struct {
     /* A NULL observer (the default) means the report task tells nobody. */
     void (*set_report_observer)(controller_handle_t *ctrl, controller_report_observer_t observer,
                                 void *ctx);
+    /* #25: the NFC state byte of §4.9, written into *both* report buffers so the
+     * console cannot be told the old value by a buffer the reporter has not
+     * swapped away yet. A HID type without NFC ignores it. */
+    void (*set_nfc_state)(controller_handle_t *ctrl, uint8_t state);
 } controller_ops_t;
 
 struct controller_handle {
