@@ -21,6 +21,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The container's seams and screens are exercised by the same discovery:
+      # `container.ns2container` imports aiohttp, so its whole test tree runs
+      # with the real dependencies installed rather than skipping.
+      - name: Install container dependencies
+        run: pip install -r container/requirements.txt ruff
+
+      - name: Python — lint the container
+        run: ruff check container/
+
       - name: Materialise the pinned reference macro library
         run: |
           set -euo pipefail

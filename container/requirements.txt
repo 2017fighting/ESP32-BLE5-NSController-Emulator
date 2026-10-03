@@ -1,0 +1,8 @@
+# The container's runtime and test dependencies (§8.1).
+#
+# `aiohttp` is the one dependency for static files, the SSE stream and the API;
+# `pyserial-asyncio` is the control link on the same event loop. The firmware
+# side is C, so the only framing implementations are the host-side Python and
+# the device-side C (ADR-0006).
+aiohttp>=3.9,<4
+pyserial-asyncio>=0.6,<1

@@ -1,0 +1,33 @@
+name: container web
+
+# The product UI is built in the image (container/Dockerfile stage 1), so a type
+# error or a broken build must fail before the image does. `npm run build` runs
+# `tsc -b`, which is the typecheck.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: container/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: container/web/package-lock.json
+
+      - name: Install the UI dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck and build
+        run: npm run build

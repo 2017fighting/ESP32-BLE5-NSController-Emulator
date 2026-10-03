@@ -1,8 +1,10 @@
 # The container — Linux canonical form (spec §10.4).
 #
-# This file is the documented default deployment and is transcribed from the locked chapter;
-# it is NOT the container skeleton. Ticket "Container skeleton, the web seam and the four
-# screens" owns the real image, the seams and the screens, and will edit this file.
+# The documented default deployment: one process on python:3.12-slim, the three
+# read-only mounts and the one --device passthrough. Build it from the repository
+# root (compose resolves `context: ..` against this file's directory):
+#
+#   docker compose -f container/compose.yaml up --build
 #
 # On the macOS bench host this file is NOT used alone: the board is not at /dev/ttyACM0 there,
 # so it is layered with the override, which changes only the devices: mapping.
@@ -15,6 +17,9 @@
 
 services:
   controller:
+    build:
+      context: ..
+      dockerfile: container/Dockerfile
     image: ghcr.io/<owner>/ns2-controller:latest
     devices:
       - /dev/ttyACM0:/dev/ttyACM0

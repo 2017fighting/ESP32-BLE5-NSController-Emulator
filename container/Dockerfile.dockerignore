@@ -1,0 +1,12 @@
+# Build context trimming for container/Dockerfile (BuildKit reads this
+# alongside the Dockerfile). Patterns are relative to the build context, which
+# compose sets to the repository root.
+**/node_modules
+container/web/dist
+**/__pycache__
+**/*.pyc
+container/tests
+build
+managed_components
+release
+.git
