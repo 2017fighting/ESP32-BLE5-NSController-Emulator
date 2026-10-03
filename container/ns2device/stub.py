@@ -189,6 +189,9 @@ class StubDevice:
 
     # ── DeviceApi ──────────────────────────────────────────────────────────
 
+    async def open(self) -> None:
+        """The stub has no port; there is nothing to open."""
+
     async def hello(self) -> Hello:
         return self.hello_state
 
@@ -301,6 +304,10 @@ class StubDevice:
     def events(self) -> AsyncIterator[Event]:
         return self._event_stream()
 
+    def log_lines(self) -> AsyncIterator[tuple[str, str]]:
+        """The stub owns no port, so it has no device log to demux (#30 real)."""
+        return self._log_stream()
+
     async def close(self) -> None:
         self._closed = True
         for queue in list(self._subscribers):
@@ -372,6 +379,10 @@ class StubDevice:
         finally:
             if queue in self._subscribers:
                 self._subscribers.remove(queue)
+
+    async def _log_stream(self) -> AsyncIterator[tuple[str, str]]:
+        for line in ():
+            yield line
 
 
 def _identity(payload: bytes) -> bytes:

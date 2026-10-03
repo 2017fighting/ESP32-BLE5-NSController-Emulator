@@ -37,6 +37,7 @@ from .model import (
     Verb,
 )
 from .stub import TAG_IMAGE_LENGTH, StubDevice
+from .session import PlanHashMismatch, SessionDevice
 
 __all__ = [
     "Bond",
@@ -61,9 +62,11 @@ __all__ = [
     "Mode",
     "PLAN_CAPACITY_BYTES",
     "PROTO_VERSION",
+    "PlanHashMismatch",
     "PlanState",
     "ProgressCallback",
     "STATUS_LENGTH",
+    "SessionDevice",
     "Status",
     "StopReason",
     "StubDevice",

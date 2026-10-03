@@ -35,13 +35,14 @@ from ..ns2device import (
     Features,
     Hello,
     Mode,
+    PlanHashMismatch,
     PlanState,
     Status,
     StopReason,
     TagState,
 )
 from ..ns2sealing import KeyInvalid, KeyMaterial, SealedTag, SealingUnavailable
-from ..ns2serial import TransportUnavailable
+from ..ns2serial import PortBusy, TransportUnavailable
 from .config import Settings
 from .library import AmiiboIndex, KeyState, KeyStatus, KeyStore, MacroEntry, MacroLibrary
 
@@ -166,18 +167,13 @@ class Controller:
         self._scan_libraries()
         self._key_status = self.keys.read()
         self.log("container", "info", self._key_line())
-        try:
-            self._hello = await self.device.hello()
-            self._status = await self.device.status()
-            self._control_link = "UP"
-            self._on_hello()
-        except TransportUnavailable as unavailable:
-            self._control_link = "DOWN"
-            self.log("container", "warn", f"control: no device on {self.settings.port} — {unavailable}")
-        except CommandError as error:
-            self._control_link = "DOWN"
-            self.log("container", "warn", f"control: HELLO refused — {error}")
-        self._tasks = [asyncio.create_task(self._poll_loop()), asyncio.create_task(self._event_loop())]
+        await self._attempt_connect()
+        self._tasks = [
+            asyncio.create_task(self._poll_loop()),
+            asyncio.create_task(self._event_loop()),
+            asyncio.create_task(self._log_loop()),
+            asyncio.create_task(self._connect_loop()),
+        ]
         # One loop turn so the event subscription is registered before any verb
         # flows. Events are hints (§3.1), but a hint dropped because nobody was
         # listening yet is still a bug worth not having.
@@ -333,11 +329,20 @@ class Controller:
 
         try:
             assert entry.plan is not None
-            await self.device.load_plan(entry.plan.identity, entry.plan.payload, on_progress=progress)
+            try:
+                await self._device_call(
+                    "load_plan",
+                    self.device.load_plan(entry.plan.identity, entry.plan.payload, on_progress=progress),
+                )
+            except PlanHashMismatch as mismatch:
+                # §5.6: the board answered, but with an identity the container
+                # did not send. Surface it; never start the run.
+                self.log("container", "error", f"plan: identity mismatch — {mismatch}")
+                raise ControllerError("PLAN_HASH_MISMATCH", str(mismatch)) from None
             self._committed_macro_id = entry.id
             self._committed_bytes = entry.bytes
             self.log("container", "info", f"plan: {entry.source} committed, identity {entry.plan.identity_hex}")
-            await self.device.start()
+            await self._device_call("start", self.device.start())
             self.log("container", "info", f"mode: MACRO started on {entry.source}")
         finally:
             self._uploading = None
@@ -357,7 +362,7 @@ class Controller:
 
     async def stop_macro(self) -> None:
         self._require_up()
-        await self.device.stop()
+        await self._device_call("stop", self.device.stop())
         self._console_lost = False
         self.log("container", "info", "mode: stopped from the app")
         await self.refresh()
@@ -388,7 +393,7 @@ class Controller:
                 "KEY_INVALID",
                 "The mounted key failed the unpack round trip; it is not a usable retail key.",
             ) from None
-        await self.device.place(sealed.image)
+        await self._device_call("place", self.device.place(sealed.image))
         self._placed_figure_id = figure_id
         self._placement_index += 1
         self._placed_at = time.monotonic()
@@ -403,7 +408,7 @@ class Controller:
 
     async def unplace(self) -> None:
         self._require_up()
-        await self.device.unplace()
+        await self._device_call("unplace", self.device.unplace())
         self._placed_figure_id = None
         self._placed_at = None
         self._last_polling = 0
@@ -412,13 +417,13 @@ class Controller:
 
     async def pair_unpair(self) -> None:
         self._require_up()
-        await self.device.pair_unpair()
+        await self._device_call("pair_unpair", self.device.pair_unpair())
         self.log("container", "info", "pairing: the board was asked to forget its bond (the console keeps its own copy)")
         await self.refresh()
 
     async def save_config(self, *, report_interval_ms: int, led: bool) -> None:
         self._require_up()
-        await self.device.config(report_interval_ms=report_interval_ms, led=led)
+        await self._device_call("config", self.device.config(report_interval_ms=report_interval_ms, led=led))
         self._config = ConsoleConfig(report_interval_ms=report_interval_ms, led=led)
         self.log("container", "info", f"config: report_interval_ms={report_interval_ms} led={'on' if led else 'off'}")
         await self.refresh()
@@ -433,24 +438,67 @@ class Controller:
         self._publish()
 
     async def reconnect(self) -> None:
+        await self._attempt_connect()
+        self._publish()
+
+    async def _attempt_connect(self) -> bool:
+        """One `HELLO`+`STATUS` attempt with the §2.8 `boot_id` branch.
+
+        Returns whether the link is up. A `Port busy` is recorded and never
+        retried through (§8.9); the connect loop decides the backoff.
+        """
         previous = self._hello
         try:
+            await self.device.open()
             hello = await self.device.hello()
-            self._hello = hello
-            self._control_link = "UP"
-            self._held_by = None
-            self._recovery = self._recovery_case(previous, hello)
-            if self._recovery == "NEW_POWER":
-                self._committed_macro_id = None
-                self._committed_bytes = 0
-                self._placed_figure_id = None
-                self._placed_at = None
-            self._on_hello()
-            await self.refresh()
+        except PortBusy as busy:
+            self._held_by = busy.holder or "another process"
+            self._control_link = "DOWN"
+            self.log("container", "warn", f"control: {busy}")
+            return False
         except TransportUnavailable as unavailable:
             self._control_link = "DOWN"
-            self.log("container", "warn", f"control: reconnect failed — {unavailable}")
+            self._held_by = None
+            self.log("container", "warn", f"control: no device on {self.settings.port} — {unavailable}")
+            return False
+        except CommandError as error:
+            self._control_link = "DOWN"
+            self.log("container", "warn", f"control: HELLO refused — {error}")
+            return False
+        self._hello = hello
+        self._held_by = None
+        self._control_link = "UP"
+        self._recovery = self._recovery_case(previous, hello)
+        if self._recovery == "NEW_POWER":
+            self._clear_device_truth()
+        self._on_hello()
+        return await self.refresh()
+
+    def _clear_device_truth(self) -> None:
+        self._committed_macro_id = None
+        self._committed_bytes = 0
+        self._placed_figure_id = None
+        self._placed_at = None
+
+    async def _device_call(self, label: str, awaitable):
+        """Await one device call, turning a dead link into a typed refusal.
+
+        The link state is marked down here rather than at the next poll, so the
+        header is honest the moment a verb fails. The verb itself is never
+        retried (§8.9, §8.10).
+        """
+        try:
+            return await awaitable
+        except PortBusy as busy:
+            self._held_by = busy.holder or "another process"
+            self._control_link = "DOWN"
             self._publish()
+            raise ControllerError("PORT_BUSY", str(busy)) from None
+        except TransportUnavailable as unavailable:
+            self._control_link = "DOWN"
+            self._held_by = None
+            self._publish()
+            raise ControllerError("NO_DEVICE", f"{label}: {unavailable}") from None
 
     @staticmethod
     def _recovery_case(previous: Hello | None, current: Hello) -> str:
@@ -462,14 +510,17 @@ class Controller:
             return "DIFFERENT_FIRMWARE"
         return "SAME_POWER"
 
-    async def refresh(self) -> None:
+    async def refresh(self) -> bool:
         try:
             self._status = await self.device.status()
             self._on_status()
         except (TransportUnavailable, CommandError) as failure:
             self._control_link = "DOWN"
             self.log("container", "warn", f"control: status failed — {failure}")
+            self._publish()
+            return False
         self._publish()
+        return True
 
     def clear_logs(self) -> None:
         self._logs.clear()
@@ -590,6 +641,10 @@ class Controller:
         period = 1.0 / max(0.1, self.settings.status_hz)
         while not self._closing:
             await asyncio.sleep(period)
+            if self._control_link != "UP":
+                # Reconnecting is the connect loop's job; polling a dead port would
+                # turn a backoff into a 2 Hz reopen storm (§8.9, §8.10).
+                continue
             try:
                 self._status = await self.device.status()
                 self._control_link = "UP"
@@ -605,6 +660,38 @@ class Controller:
                 self._control_link = "DOWN"
             self._publish()
 
+    async def _connect_loop(self) -> None:
+        """Retry the open with backoff while the link is down (§8.9).
+
+        Never retries through a held port: a `Port busy` is a deployment error
+        the user fixes, and `Reconnect` is the manual retry.
+        """
+        backoff = 1.0
+        while not self._closing:
+            await asyncio.sleep(backoff)
+            if self._control_link == "UP":
+                backoff = 1.0
+                continue
+            if self._held_by is not None:
+                backoff = min(backoff * 2.0, 30.0)
+                continue
+            if await self._attempt_connect():
+                backoff = 1.0
+                self.log("container", "info", "control: reconnected without a manual step")
+            else:
+                backoff = min(backoff * 2.0, 30.0)
+            self._publish()
+
+    async def _log_loop(self) -> None:
+        """Forward the board's `ESP_LOG` lines to the Logs screen (§8.2, §8.7)."""
+        try:
+            async for level, message in self.device.log_lines():
+                self.log("device", level, message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as failure:  # pragma: no cover - defensive
+            self.log("container", "warn", f"device log stream stopped: {failure}")
+
     async def _event_loop(self) -> None:
         prompts = {
             EventKind.MODE_CHANGED,
@@ -613,13 +700,17 @@ class Controller:
             EventKind.TAG_PLACED,
             EventKind.TAG_UNPLACED,
             EventKind.CONSOLE_LINK,
-            EventKind.BOOT,
         }
         try:
             async for event in self.device.events():
                 self._on_event(event)
                 # §3.1: an event is a prompt to re-read STATUS, never a substitute.
-                if event.kind in prompts:
+                if event.kind is EventKind.BOOT:
+                    # §2.8/§8.3: a mid-session BOOT means the same as a reconnect —
+                    # HELLO, then the boot_id branch decides what survives.
+                    await self._attempt_connect()
+                    self._publish()
+                elif event.kind in prompts:
                     await self.refresh()
                 else:
                     self._publish()

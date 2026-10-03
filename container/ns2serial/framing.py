@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import binascii
 import struct
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Iterator
 
 from ..ns2device.model import MAX_FRAME, PROTO_VERSION, FrameType
 
@@ -143,12 +143,23 @@ class FrameDecoder:
 
     Resynchronisation never resets the link — a log line is a chunk that fails
     its CRC and is discarded, and the scan resumes at the next `0x00` (§2.2).
-    Every dropped block is counted so the frame trace can show it.
+    Every dropped block is counted so the frame trace can show it, and the raw
+    segment is handed to `on_discard` when a callback is given. That callback is
+    the **log demux** seam (§8.2): `ESP_LOG` text shares the wire and never
+    contains a `0x00`, so a log line arrives as one segment that cannot be a
+    frame — the decoder discards it, and the serial seam turns the discarded
+    segment into `{source="device"}` lines rather than silently counting it.
     """
 
-    def __init__(self, *, max_frame: int = MAX_FRAME) -> None:
+    def __init__(
+        self,
+        *,
+        max_frame: int = MAX_FRAME,
+        on_discard: Callable[[bytes], None] | None = None,
+    ) -> None:
         self._buffer = bytearray()
         self.max_frame = max_frame
+        self.on_discard = on_discard
         self.dropped = 0
         self.resyncs = 0
 
@@ -165,20 +176,22 @@ class FrameDecoder:
             try:
                 decoded = cobs_decode(segment)
             except FramingError:
-                self._discard()
+                self._discard(segment)
                 continue
             if len(decoded) > self.max_frame:
-                self._discard()
+                self._discard(segment)
                 continue
             frame = decode_frame(decoded)
             if frame is None:
-                self._discard()
+                self._discard(segment)
                 continue
             yield frame
 
-    def _discard(self) -> None:
+    def _discard(self, segment: bytes) -> None:
         self.dropped += 1
         self.resyncs += 1
+        if self.on_discard is not None:
+            self.on_discard(segment)
 
 
 __all__ = [

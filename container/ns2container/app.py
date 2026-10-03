@@ -1,31 +1,39 @@
 """Assembly: the one asyncio process, the four seams and the four screens (§8.1, §8.2).
 
 ```text
-aiohttp (ns2web)  ──▶  Controller (ns2container.state)  ──DeviceApi──▶  StubDevice
-                                                                        (issue #30: the session
-                                                                         over ns2serial.FrameIO)
+aiohttp (ns2web)  ──▶  Controller (ns2container.state)  ──DeviceApi──▶  SessionDevice
+                                                                        └ FrameTransport
+                                                                          └ SerialPortTransport
 ```
 
-The `device` seam is a **stub** in this build by design: ticket #30 replaces it
-with the real session against the verbs, and nothing in the web seam or the
-state model moves when it does. The sealing seam is the real pure function's
-interface; its implementation is ticket #32's, so a placement is refused with a
-typed `SEALING_UNAVAILABLE` rather than replaying a stored dump unchanged
-(§6.7's one failure mode that looks like success).
+The `device` seam is the **real session**: `ns2serial.SerialPortTransport` is
+the port (with the §8.3 DTR/RTS sequence), `ns2serial.FrameTransport` is the
+§2.3 conversation and the §2.7 bulk window, and `ns2device.SessionDevice` is
+the verbs. `StubDevice` remains for tests that want the §4.3 transition table
+without a wire. The sealing seam is the real pure function's interface; its
+implementation is ticket #32's, so a placement is refused with a typed
+`SEALING_UNAVAILABLE` rather than replaying a stored dump unchanged (§6.7's one
+failure mode that looks like success).
 """
 
 from __future__ import annotations
 
 from aiohttp import web
 
-from ..ns2device import DeviceApi, StubDevice
+from ..ns2device import DeviceApi, SessionDevice
 from ..ns2sealing import seal
+from ..ns2serial import FrameTransport, SerialPortTransport
 from ..ns2web import create_web_app
 from .config import Settings
 from .library import AmiiboIndex, KeyStore, MacroLibrary
 from .state import Controller, Sealer
 
 __all__ = ["Controller", "Settings", "create_app"]
+
+
+def create_device(settings: Settings) -> DeviceApi:
+    """The real device session over the configured port (§8.2, §8.3)."""
+    return SessionDevice(FrameTransport(SerialPortTransport(settings.port, settings.baud)))
 
 
 def create_controller(
@@ -36,7 +44,7 @@ def create_controller(
 ) -> Controller:
     """Build the controller the web seam serves. `device`/`sealer` are injectable for tests."""
     return Controller(
-        device=device if device is not None else StubDevice(),
+        device=device if device is not None else create_device(settings),
         settings=settings,
         macros=MacroLibrary(settings.macro_dir, capacity_bytes=settings.plan_capacity_bytes),
         figures=AmiiboIndex(settings.amiibo_dir),

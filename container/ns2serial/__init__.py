@@ -13,6 +13,8 @@ from .api import (
     SerialTransport,
     TransportUnavailable,
 )
+from .frame_io import ACK_WINDOW, FrameTransport
+from .port import PortBusy, SerialPortTransport, find_holder
 from .framing import (
     COBS_DELIMITER,
     HEADER_SIZE,
@@ -27,14 +29,18 @@ from .framing import (
 )
 
 __all__ = [
+    "ACK_WINDOW",
     "COBS_DELIMITER",
     "DEFAULT_BAUD",
     "DEFAULT_PORT",
     "FALLBACK_BAUD",
     "Frame",
     "FrameDecoder",
+    "FrameTransport",
     "FramingError",
     "HEADER_SIZE",
+    "PortBusy",
+    "SerialPortTransport",
     "SerialTransport",
     "TransportUnavailable",
     "cobs_decode",
@@ -42,4 +48,5 @@ __all__ = [
     "crc16_ccitt_false",
     "decode_frame",
     "encode_request",
+    "find_holder",
 ]

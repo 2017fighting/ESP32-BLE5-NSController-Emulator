@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .app import Controller, create_app, create_controller
+from .app import Controller, create_app, create_controller, create_device
 from .config import Settings
 from .library import AmiiboIndex, KeyState, KeyStore, MacroLibrary
 from .state import ControllerError, LogLine
@@ -18,4 +18,5 @@ __all__ = [
     "Settings",
     "create_app",
     "create_controller",
+    "create_device",
 ]
