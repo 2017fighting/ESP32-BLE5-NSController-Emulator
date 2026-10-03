@@ -3,6 +3,8 @@
 #include "device.h"
 #include "utils.h"
 
+#include "esp_timer.h"
+
 #include <string.h>
 #include <stdlib.h>
 
@@ -79,6 +81,26 @@ static void controller_task(void *arg) {
             // Send report from local buffer - safe even if buffer swap occurs
             int rc = gatt_notify(state->conn_handle, ctrl->ns2_notification_handle,
                                     report_buffer, report_size);
+
+            /* §7.5's report-cadence instrument (#35): the one place a report's
+             * departure from this layer is visible. Stamped here rather than in
+             * the observer's caller so every outcome shares one clock read, and
+             * only when somebody is listening. */
+            controller_report_observer_t observe = ctrl->report_observer;
+            if (observe != NULL) {
+                const uint8_t *observed = NULL;
+                if (rc == 0 && ctrl->type == CONTROLLER_TYPE_PRO2 &&
+                    report_size >= offsetof(hid_report_pro2_t, buttons) + CONTROLLER_STATE_BYTES) {
+                    observed = report_buffer + offsetof(hid_report_pro2_t, buttons);
+                }
+                controller_report_outcome_t outcome = (rc == 0) ? CONTROLLER_REPORT_SENT
+                                                   : (rc == BLE_HS_EBUSY)
+                                                       ? CONTROLLER_REPORT_DROPPED_MSYS
+                                                       : CONTROLLER_REPORT_FAILED;
+                observe(ctrl->report_observer_ctx, outcome, observed,
+                        (uint32_t)esp_timer_get_time());
+            }
+
             if (rc == BLE_HS_EBUSY) {
                 // The msys pool is running low (the peer is not draining
                 // notifications - a console parked on the grip-order screen does
@@ -256,6 +278,15 @@ static bool controller_commit_idle_impl(controller_handle_t *ctrl) {
     return ctrl->buffer.swap_request == 0;
 }
 
+static void controller_set_report_observer_impl(controller_handle_t *ctrl,
+                                                controller_report_observer_t observer, void *ctx) {
+    if (ctrl == NULL) {
+        return;
+    }
+    ctrl->report_observer = observer;
+    ctrl->report_observer_ctx = ctx;
+}
+
 const controller_ops_t controller_ops = {
     .name           = "controller",
     .init           = controller_init_impl,
@@ -266,4 +297,5 @@ const controller_ops_t controller_ops = {
     .hid_commit     = controller_hid_commit_impl,
     .hid_reset      = controller_hid_reset_impl,
     .commit_idle    = controller_commit_idle_impl,
+    .set_report_observer = controller_set_report_observer_impl,
 };

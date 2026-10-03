@@ -35,9 +35,10 @@ jobs:
             main/src/protocol/control/control_log.c
             main/src/protocol/control/control_events.c
             main/src/protocol/control/control_mode.c
-            main/src/protocol/control/control_executor.c"
+            main/src/protocol/control/control_executor.c
+            main/src/protocol/control/control_meter.c"
           for suite in test_control_framing test_control_verbs test_control_mode \
-                       test_control_executor; do
+                       test_control_executor test_control_meter; do
             cc -std=c11 -Wall -Wextra -Werror -Imain/include -Itest/host \
               -o "$RUNNER_TEMP/$suite" "test/host/$suite.c" $portable
             "$RUNNER_TEMP/$suite"
@@ -53,9 +54,10 @@ jobs:
             main/src/protocol/control/control_log.c
             main/src/protocol/control/control_events.c
             main/src/protocol/control/control_mode.c
-            main/src/protocol/control/control_executor.c"
+            main/src/protocol/control/control_executor.c
+            main/src/protocol/control/control_meter.c"
           for suite in test_control_framing test_control_verbs test_control_mode \
-                       test_control_executor; do
+                       test_control_executor test_control_meter; do
             cc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
               -fno-omit-frame-pointer -Imain/include -Itest/host \
               -o "$RUNNER_TEMP/${suite}_asan" "test/host/${suite}.c" $portable

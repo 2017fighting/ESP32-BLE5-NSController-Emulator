@@ -42,6 +42,9 @@ typedef struct {
     bool busy;
     bool refuse;
     int commit_idle_calls;
+    /* Every `loop_restarted` the executor fired, with the clock it passed. */
+    uint32_t restarts[16];
+    int restarts_n;
 } reporter_t;
 
 static bool reporter_apply(void *ctx, const uint8_t state[CONTROL_EXECUTOR_STATE_BYTES])
@@ -69,6 +72,15 @@ static bool reporter_idle(void *ctx)
 static void reporter_consume(reporter_t *r)
 {
     r->busy = false;
+}
+
+static void reporter_restarted(void *ctx, uint32_t now_ms)
+{
+    reporter_t *r = (reporter_t *)ctx;
+    if (r->restarts_n < (int)(sizeof(r->restarts) / sizeof(r->restarts[0]))) {
+        r->restarts[r->restarts_n] = now_ms;
+    }
+    r->restarts_n++;
 }
 
 static bool reporter_last_is(const reporter_t *r, const uint8_t expect[9])
@@ -133,6 +145,7 @@ static void ex_init(control_executor_t *ex, reporter_t *r, harness_t *h)
         .ctx = r,
         .apply_state = reporter_apply,
         .commit_idle = reporter_idle,
+        .loop_restarted = reporter_restarted,
     };
     control_executor_init(ex, &io);
     (void)h;
@@ -747,6 +760,48 @@ static void test_stopped_is_inert(void)
     CHECK(r.n == writes, "a stopped executor must not write on step");
 }
 
+static void test_loop_restarts_are_reported_with_the_walk_s_clock(void)
+{
+    /* §5.4's loop period as the report carries it (#35): the hook fires on the
+     * arm and on every boundary, with the executor's own clock, and never on the
+     * `RESUME` of a console re-subscribe (that continues the loop it was in). */
+    harness_t h;
+    harness_init(&h);
+    reporter_t r;
+    control_executor_t ex;
+    ex_init(&ex, &r, &h);
+    uint8_t buf[CONTROL_TEST_PLAN_CAP];
+    const uint16_t holds[2] = {50, 50}; /* loop_ms = 100 */
+
+    arm_plan(&h, &ex, buf, holds, 2, 100, 0);
+    CHECK(r.restarts_n == 0, "the arm only opens the handoff; the restart follows");
+    reporter_consume(&r);
+    control_executor_step(&ex, &h.ctl, 0);
+    CHECK(r.restarts_n == 1 && r.restarts[0] == 0,
+          "the arm's restart is reported at the arm's clock: n=%d t=%u",
+          r.restarts_n, r.restarts_n ? (unsigned)r.restarts[0] : 0u);
+
+    reporter_consume(&r);
+    control_executor_step(&ex, &h.ctl, 50);
+    reporter_consume(&r);
+    control_executor_step(&ex, &h.ctl, 100); /* the boundary */
+    CHECK(r.restarts_n == 1, "a boundary that cannot restart yet reports nothing: n=%d",
+          r.restarts_n);
+    reporter_consume(&r);
+    control_executor_step(&ex, &h.ctl, 110);
+    CHECK(r.restarts_n == 2 && r.restarts[1] == 110,
+          "the restart is reported when record 0 actually lands: n=%d t=%u",
+          r.restarts_n, r.restarts_n > 1 ? (unsigned)r.restarts[1] : 0u);
+
+    /* A console re-subscribe re-arms the neutral and continues at the current
+     * frame: §4.7, not a loop restart, so the interval a bench measures is not
+     * polluted by it. */
+    control_executor_rearm(&ex, &h.ctl, 120);
+    reporter_consume(&r);
+    control_executor_step(&ex, &h.ctl, 130);
+    CHECK(r.restarts_n == 2, "RESUME must not report a restart: n=%d", r.restarts_n);
+}
+
 int main(void)
 {
     test_neutral_template();
@@ -755,6 +810,7 @@ int main(void)
     test_arm_emits_neutral_first();
     test_walk_holds_each_record();
     test_boundary_neutral_then_restart();
+    test_loop_restarts_are_reported_with_the_walk_s_clock();
     test_no_drift_across_loops();
     test_loop_completed_rate_limited();
     test_config_applies_at_the_boundary();

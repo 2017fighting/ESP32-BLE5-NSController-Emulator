@@ -104,6 +104,13 @@ typedef struct {
     /* True once the reporter has consumed the last commit. A NULL means "always
      * ready", which is what a test that does not model the reporter wants. */
     bool (*commit_idle)(void *ctx);
+    /* Fired when a loop's record 0 has just been applied — `ARM` and the loop
+     * boundary, never the `RESUME` of a console re-subscribe. The interval
+     * between two of them is the loop period *as the report carries it*, which is
+     * the only place §5.4's "no inter-loop gap" can be measured: the boundary's
+     * neutral costs a report period before record 0 can replace it (§4.6), and
+     * the plan's own clock cannot show that. NULL is "nobody is counting". */
+    void (*loop_restarted)(void *ctx, uint32_t now_ms);
 } control_executor_io_t;
 
 typedef enum {

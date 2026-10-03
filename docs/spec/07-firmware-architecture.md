@@ -135,7 +135,45 @@ millisecond holds (ADR-0009) are what keep playback speed independent of all of 
 **And on a DEBUG build the report rate is set by the UART log budget, not by any of it.**
 152 B of log per report against 11,520 B/s caps the rate at 75.8/s; 74.4/s was observed — 98%
 of that ceiling. **Any latency measurement from a DEBUG-logged run is a logging floor**, so
-timing work runs with `CONFIG_LOG_MAXIMUM_LEVEL=INFO` and the per-notification logs off.
+timing work runs with `CONFIG_LOG_MAXIMUM_LEVEL=INFO` and the per-notification logs off. An
+`INFO` build reaches **10.00 ms — 100.0 notifications/s — measured**, 32% above that ceiling,
+which is what makes the numbers below a measurement of the report period rather than of the log
+(`macro-timing-bench.md` §2).
+
+**The report period against the plan's holds, measured** (validation row 3, G-16;
+`macro-timing-bench.md` §2). With a real console connected and subscribed — its own link measured
+in the same capture at **5.00 ms** (`conn_itvl=4`) — a plan's holds are delivered as holds on the
+report grid: a 50 ms hold reads 49.98 ms, a 10 ms hold 10.01, a 120 ms hold 119.96, and a hold that
+is not a multiple of the period reads as the two neighbouring grid values (25 ms alternates
+20.2/30.2) — the *error is bounded by one period and never accumulates*: over 9–54 loops the mean
+loop period is the plan's `loop_ms` + ≤ 1.1 ms, with ±1 tick of per-loop jitter. That is ADR-0009's
+absolute-deadline walk visible in the data.
+
+Two consequences the measurement settles, and the condition that would reopen the 5 ms question:
+
+- **The neutral's handoff costs exactly one report period, per loop boundary.** §4.6/§5.4 make
+the boundary commit the neutral and wait for the reporter to take it; measured, that wait is
+9.93–9.99 ms mean (min 9.60, max 10.03) over 1–55 waits — the arm's plus one per boundary — and it
+appears as the +0.2…+1.1 ms on the mean loop period, never as drift. With **no console subscribed
+it is zero**: the same plans measure `loop_ms` exactly, min = mean = max (a 190 ms loop reads 190.0
+on all 26 loops).
+- **A state held for less than the report period can be overwritten before the reporter samples
+it, and is then never on the wire.** Delivery of the executor's input changes, measured: **100%**
+at a 50 ms hold and at 25 ms (99.1–100% across runs), on a real 71-record library macro's first 34
+records, and **100%** on a 360 ms loop of 120 ms holds — against **90.1%** at a 10 ms hold and
+**5.1%** at 5 ms. A 10 ms period therefore carries any macro whose holds are much wider than the
+period, which is every macro in the pinned library (median hold 21–120 ms); **holds at or below the
+period are the case that would justify raising `CONFIG_FREERTOS_HZ`**, and that is a macro-authoring
+limit rather than an executor defect — the executor walks a 5 ms plan exactly (95.2 ms loop,
+`loop_ms` + 0.2) and it is the report that cannot carry it. ADR-0003's `hold_ms` keeps that fork to
+a clock change and nothing else.
+
+The device prints this run's meter as one INFO line per section when the mode exits
+(`macro meter: applied=… changes=… inputs=… notified=…`, then the exact delta extremes, the handoff,
+the loop periods, and the newest 64 inputs with their intervals), never per report — for the same
+reason the staging-close line is printed once above. The console's own connection interval is
+logged on the same `control` tag from `gap.c`'s connect handler, because validation 3's comparison
+needs both halves in one INFO capture (`main.c` raises no other tag above `WARN`).
 
 **The 100 Hz tick against the §2.7 ACK window, measured** (validation row 2, `rx-ring-bench.md`).
 The 256 B RX ring **absorbs the 4096 B window at the design baud with the window and ring

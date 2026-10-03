@@ -29,6 +29,7 @@
 #include "protocol/control/control_events.h"
 #include "protocol/control/control_executor.h"
 #include "protocol/control/control_link.h"
+#include "protocol/control/control_meter.h"
 #include "protocol/control/control_mode.h"
 #include "protocol/control/control_protocol.h"
 #include "protocol/control/control_verbs.h"
@@ -358,6 +359,11 @@ static uint32_t control_now_ms(void)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+static uint32_t control_now_us(void)
+{
+    return (uint32_t)esp_timer_get_time();
+}
+
 /*
  * The plan executor's physical half (#24). These three functions are the whole
  * boundary between the portable walk and the report: write nine bytes and
@@ -377,8 +383,19 @@ static bool executor_apply_state(void *ctx, const uint8_t state[CONTROL_EXECUTOR
     }
     g_hid_controller.hid_ops->set_state(back, state);
     g_hid_controller.ops->hid_commit(&g_hid_controller);
+    /* §7.5's instrument (#35): every write — the neutral included — advances the
+     * generation a notification is labelled with, which is how the bench tells
+     * an input that reached the console from one the report period skipped. */
+    macro_meter_apply(state);
     return true;
 }
+
+/* The one handoff wait in flight (#35); cleared at every `START`, so a run stopped
+ * mid-handoff cannot lend its start time to the next run's first boundary. */
+static struct {
+    uint32_t since_us;
+    bool waiting;
+} s_handoff;
 
 static bool executor_commit_idle(void *ctx)
 {
@@ -396,19 +413,58 @@ static bool executor_commit_idle(void *ctx)
      * against an absent console?" answered in the code). Nobody is subscribed
      * means nobody is owed the neutral, so the handoff is vacuously complete.
      */
+    uint32_t us = control_now_us();
     g_subscribe_state_t *sub = subscribe_entry_get(NS2_NOTIFICATION_HANDLE);
+    bool idle;
     if (sub == NULL || !sub->notify_enabled || sub->conn_handle == BLE_HS_CONN_HANDLE_NONE) {
-        return true;
+        idle = true;
+    } else {
+        /* Via the ops table, not the buffer: "has the reporter taken the commit"
+         * is the HID layer's question to answer, not the control layer's to
+         * assume. */
+        idle = g_hid_controller.ops->commit_idle(&g_hid_controller);
     }
-    /* Via the ops table, not the buffer: "has the reporter taken the commit" is
-     * the HID layer's question to answer, not the control layer's to assume. */
-    return g_hid_controller.ops->commit_idle(&g_hid_controller);
+
+    /* The handoff's cost, measured where the executor feels it (#35): the wait
+     * runs from this callback's first `not yet` to the `taken`. #24 could only
+     * bound it (≤ 50 ms) and bound it by construction; with a console subscribed
+     * this is the number. Only one wait can be open at a time — the executor
+     * resolves a handoff before it starts the next — so one tracker is enough. */
+    if (idle) {
+        if (s_handoff.waiting) {
+            macro_meter_handoff(us - s_handoff.since_us);
+            s_handoff.waiting = false;
+        }
+    } else if (!s_handoff.waiting) {
+        s_handoff.since_us = us;
+        s_handoff.waiting = true;
+    }
+    return idle;
+}
+
+/* §5.4's loop period, as the report carries it (#35): the interval between two
+ * record-0 applies. The plan's own clock is exact by construction, so the plan
+ * cannot show what the boundary's neutral costs; this is the measurement. */
+static void executor_loop_restarted(void *ctx, uint32_t now_ms)
+{
+    (void)ctx;
+    (void)now_ms;
+    macro_meter_restart(control_now_us());
 }
 
 static uint8_t executor_start_macro(void *ctx)
 {
     (void)ctx;
-    return control_executor_arm(&s_control.ex, &s_control.ctl, control_now_ms());
+    /* Armed *before* the arm, so the arm's own neutral is generation 1 rather
+     * than an uncounted write, and undone if the arm refuses (§2.3: a rejection
+     * leaves state untouched — including the instrument's). */
+    s_handoff.waiting = false;
+    macro_meter_arm(control_now_us());
+    uint8_t code = control_executor_arm(&s_control.ex, &s_control.ctl, control_now_ms());
+    if (code != CONTROL_ERR_NONE) {
+        macro_meter_disarm();
+    }
+    return code;
 }
 
 static void executor_stop(void *ctx, uint8_t reason)
@@ -419,6 +475,35 @@ static void executor_stop(void *ctx, uint8_t reason)
      * `control_mode_exit`'s; this is only the executor's half, so the
      * container's STOP and the BOOT stop cannot drift. */
     control_executor_stop(&s_control.ex);
+    /* Every exit from the mode lands here — `STOP`, the BOOT stop, the fault
+     * path and the `AMIIBO` exits — so the run's readout has one site. It prints
+     * nothing when the meter was never armed. */
+    macro_meter_report(control_now_us());
+}
+
+/*
+ * The report task's view of what actually left the radio (§7.5, #35). Installed
+ * at init and never removed; the HID layer calls it with the lock *not* held, so
+ * it touches the meter and nothing else — no verbs, no events (§7.2's callback
+ * discipline).
+ */
+static void control_report_observer(void *ctx, controller_report_outcome_t outcome,
+                                    const uint8_t state[9], uint32_t us)
+{
+    (void)ctx;
+    switch (outcome) {
+    case CONTROLLER_REPORT_SENT:
+        if (state != NULL) {
+            macro_meter_notify(state, us);
+        }
+        break;
+    case CONTROLLER_REPORT_DROPPED_MSYS:
+        macro_meter_dropped(true, us);
+        break;
+    case CONTROLLER_REPORT_FAILED:
+        macro_meter_dropped(false, us);
+        break;
+    }
 }
 
 /*
@@ -482,8 +567,14 @@ void control_parser_init(void)
         .ctx = NULL,
         .apply_state = executor_apply_state,
         .commit_idle = executor_commit_idle,
+        .loop_restarted = executor_loop_restarted,
     };
     control_executor_init(&s_control.ex, &io);
+
+    /* §7.5's report-cadence instrument (#35): installed rather than called, so
+     * the HID layer needs no knowledge of the control plane and a build without
+     * it carries no meter. */
+    g_hid_controller.ops->set_report_observer(&g_hid_controller, control_report_observer, NULL);
 
     const control_effects_t fx = {
         .ctx = NULL,
@@ -534,6 +625,17 @@ void control_notify_bond(uint8_t bond)
     control_ctl_lock();
     control_set_bond(&s_control.ctl, bond);
     control_ctl_unlock();
+}
+
+void control_notify_console_interval(int conn_itvl)
+{
+    /* Deliberately unchecked. The NS2 sets `conn_itvl=4` — 5.0 ms — on every
+     * connection, which is *below* the 6-unit minimum a compliant central would
+     * request (that is why `ble_gap_update_params` fails on every connect, §9.1);
+     * a "sanity" bound here would have suppressed the one number validation 3
+     * needs. This function's whole job is to report what the console did. */
+    ESP_LOGI("control", "console link: conn_itvl=%d conn_itvl_ms=%u", conn_itvl,
+             (unsigned)((conn_itvl * 125u) / 100u));
 }
 
 #endif /* CONFIG_PROTOCOL_LAYER_CONTROL */

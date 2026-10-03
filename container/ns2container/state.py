@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from ..ns2device import (
     CommandError,
     ConsoleConfig,
+    ConsoleLink,
     DeviceApi,
     ErrorCode,
     Event,
@@ -311,6 +312,18 @@ class Controller:
             reason = entry.rejection.message if entry.rejection else "the macro was rejected"
             raise ControllerError("MACRO_REJECTED", reason)
         self._require_up()
+        # §9.3: the device does not need the console to run a macro, so a run
+        # without one is **allowed and warned** rather than refused — refusing
+        # would be dishonest about a dependency that does not exist. This is the
+        # one place the warning can be given before the fact: once the run is
+        # going, nothing about it looks different (G-4).
+        if self._status is not None and self._status.console_link is not ConsoleLink.CONNECTED:
+            self.log(
+                "container",
+                "warn",
+                f"console: not connected — {entry.source} runs anyway and its inputs go "
+                "nowhere until the console connects (§9.3)",
+            )
         if self._hello is not None and entry.bytes > self._hello.plan_capacity_bytes:
             # §8.4: validate against HELLO.plan_capacity_bytes before uploading,
             # so PLAN_TOO_LARGE is a container-side pre-check and a device ERROR
@@ -392,6 +405,16 @@ class Controller:
         if image is None:
             raise ControllerError("FIGURE_UNREADABLE", f"{entry.source} is missing or shorter than 540 bytes.")
         self._require_up()
+        # §9.3 covers `PLACE_AMIIBO` in the same sentence as `START`: a placement
+        # without a console is allowed, and the one consequence worth stating is
+        # the same — nothing happens until one connects.
+        if self._status is not None and self._status.console_link is not ConsoleLink.CONNECTED:
+            self.log(
+                "container",
+                "warn",
+                f"console: not connected — {entry.name} is placed anyway and no scan will "
+                "reach it until the console connects (§9.3)",
+            )
         sealed = self._seal_figure(image)
         if sealed is None:
             if self._key_status.state is KeyState.KEY_INVALID:

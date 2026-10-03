@@ -94,6 +94,14 @@ _Avoid_: loading, upload buffer, pending, temporary
 The report in which every button is released and both sticks are centred.
 _Avoid_: release, reset, idle report
 
+**Handoff**:
+The executor's wait at a loop boundary between committing the neutral and writing the next loop's first plan frame: the neutral has to be transmitted before the frame that would overwrite it can be. One report period while a console is subscribed, and nothing while it is not. (The firmware also *hands work off* between tasks — `gap.c`'s advertise restart — which is a different thing; the compiled-in handoff is this one.)
+_Avoid_: gap, dwell, delay, inter-loop gap
+
+**Report period**:
+The interval between the device's HID notifications: one tick, 10 ms at `CONFIG_FREERTOS_HZ=100`. It is what the console actually sees, and it is not `CONFIG_HID_REPORT_INTERVAL`, which is a tick count rather than a millisecond knob.
+_Avoid_: report interval (the `CONFIG_` name), tick rate, report frequency
+
 ### Amiibo
 
 **Amiibo**:

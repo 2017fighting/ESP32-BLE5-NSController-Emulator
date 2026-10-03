@@ -48,6 +48,16 @@ size_t control_parser_poll_event(uint8_t *out, size_t cap);
 void control_notify_console_link(uint8_t which, uint16_t reason);
 void control_notify_bond(uint8_t bond);
 
+/*
+ * The console's own connection interval, in 1.25 ms units, straight from the BLE
+ * layer (#35, §12.2 validation 3). It is logged at INFO on the `control` tag and
+ * nowhere else, for two reasons that make it a control-plane fact rather than a
+ * `ble_gap` one: `main.c` raises only `control` above `WARN`, and validation 3
+ * compares the macro's input-to-input latency *against this link*, so both halves
+ * of the comparison have to be in the same INFO capture.
+ */
+void control_notify_console_interval(int conn_itvl);
+
 #endif /* CONFIG_PROTOCOL_LAYER_CONTROL */
 
 #ifdef __cplusplus

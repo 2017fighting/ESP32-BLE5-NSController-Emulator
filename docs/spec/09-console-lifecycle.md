@@ -107,9 +107,11 @@ action it already takes on `SCAN_ENDED` (§6.5), so this is a policy, not new ma
 ### Console never connected → **allow `START` and `PLACE_AMIIBO`, warn**
 
 The device does not need the console to run a macro. Refusing would be dishonest about a
-dependency that does not exist, so the container allows it and the UI says the console is not
-connected. The one consequence worth stating: a `MACRO` run that starts with no console will
-look like nothing happened until the console connects.
+dependency that does not exist, so the container allows it and — before the first byte is
+uploaded — logs the one consequence worth stating: *the run's inputs go nowhere until the console
+connects*. The UI says the console is not connected as well. Measured on the real container with
+the console off, the run is allowed, the mode reads `MACRO` throughout, `currentFrame` advances,
+and nothing else happens (`macro-timing-bench.md` §3).
 
 ### Device reboot mid-session → **discard and re-upload** (ADR-0004)
 
@@ -130,13 +132,14 @@ These are **known gaps**, carried in §12.3, not silent assumptions:
 | Gap | Why it is open |
 | --- | --- |
 | **G-5** — is the console content with a pass resumed mid-press after a link drop? | needs a working `MACRO` mode on the bench to present the condition |
-| **G-4** — is a macro run harmless against an absent console? | same |
+| **G-4** — ~~is a macro run harmless against an absent console?~~ **Answered.** It is harmless and silent: the container allows the run and warns, the executor walks every record, **zero** notifications go out, the handoff is vacuous, and the mode returns `IDLE` with `CONTAINER_STOP` — nothing a console could be surprised by. §7.5 carries the numbers; `macro-timing-bench.md` §3 the observation | closed by [Bench: plan-executor timing, with and without a console (G-16, G-4)](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/35) |
 | **G-6** — does per-scan freshness require an **observable** unplace through the PN7160 path? | the console never enters `.nfp`, so neither half can be checked |
 | **G-6** — does freshness actually key on the UID on NS2? | proven on NS1 through emuiibo's random-UUID toggle; the NS2-through-PN7160 equivalence is an inference |
-| **G-16** — does the 5 ms link hold **under macro load**? | the load question needs a `MACRO` mode to generate traffic |
+| **G-16** — ~~does the 5 ms link hold under macro load?~~ **Answered.** The link is not the constraint; the report period is, and it holds. The one condition that would reopen it is a macro whose holds are at or below the period. §7.5 carries the numbers; `macro-timing-bench.md` §2 the observation | closed by the same ticket |
 
 The container's policy of §9.3 is chosen so that **none of the four gaps can produce a wrong
 input on the console**: the risky half (a resumed mid-press pass) is stopped rather than
 risked, and the freshness half is a superset (always emit the gap) rather than an assumption.
 That is the point of deciding policy on unverified facts: pick the branch that is safe under
-either answer.
+either answer. Two of the four were then closed by measurement — **G-4** and **G-16** — and the
+table above says with which numbers.

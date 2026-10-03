@@ -96,6 +96,11 @@ int handle_gap_event(struct ble_gap_event* event, void* arg) {
           xTimerStop(s_restart_adv_timer, 0);
         }
 #ifdef CONFIG_PROTOCOL_LAYER_CONTROL
+        /* §12.2 validation 3 (#35): the console's own connection interval is what
+         * the macro's input-to-input latency is compared against, so it has to be
+         * in the same INFO capture as the measurement. `main.c` raises only the
+         * `control` tag above WARN, so the CONTROL layer logs it. */
+        control_notify_console_interval(desc.conn_itvl);
         // §4.1/§3.3: the console link is one of the five axes, and its edge is
         // an EVENT; the container never infers it from the control link.
         control_notify_console_link(CONTROL_CONSOLE_EVENT_CONNECTED, 0);

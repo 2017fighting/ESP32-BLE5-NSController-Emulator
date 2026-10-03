@@ -423,6 +423,44 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
         await controller.place_figure("Zelda/Link.bin")
         self.assertEqual(controller.snapshot()["mode"], "AMIIBO")
 
+    async def test_starting_with_no_console_warns_that_it_runs_into_the_void(self):
+        # G-4 is observed, not assumed: the run is *allowed* and the container
+        # *warns*, because the one consequence worth stating is that nothing will
+        # look different until a console connects (§9.3).
+        device = StubDevice(console_link=ConsoleLink.ADVERTISING)
+        controller = await self.start_controller(device=device)
+        await controller.start_macro("correction.json")
+        warnings = [line.message for line in controller._logs
+                    if line.level == "warn" and line.source == "container"]
+        self.assertTrue(any("not connected" in message for message in warnings),
+                        f"no console warning among {warnings!r}")
+        self.assertEqual(controller.snapshot()["mode"], "MACRO",
+                         "the warning does not refuse the run")
+        await controller.stop_macro()
+
+    async def test_starting_with_a_connected_console_does_not_warn(self):
+        device = StubDevice(console_link=ConsoleLink.CONNECTED)
+        controller = await self.start_controller(device=device)
+        await controller.start_macro("correction.json")
+        warnings = [line.message for line in controller._logs
+                    if line.level == "warn" and line.source == "container"]
+        self.assertFalse(any("not connected" in message for message in warnings),
+                         f"a connected console still warned: {warnings!r}")
+        await controller.stop_macro()
+
+    async def test_placing_with_no_console_warns_too(self):
+        # §9.3 names `PLACE_AMIIBO` in the same sentence as `START`: the placement
+        # is allowed, and the console is what is missing.
+        device = StubDevice(console_link=ConsoleLink.ADVERTISING)
+        controller = await self.start_controller(device=device)
+        await controller.place_figure("Zelda/Link.bin")
+        warnings = [line.message for line in controller._logs
+                    if line.level == "warn" and line.source == "container"]
+        self.assertTrue(any("not connected" in message for message in warnings),
+                        f"no console warning among {warnings!r}")
+        self.assertEqual(controller.snapshot()["mode"], "AMIIBO",
+                         "the warning does not refuse the placement")
+
     async def test_an_event_is_a_prompt_to_re_read_status(self):
         controller = await self.start_controller()
         controller._on_event(Event(EventKind.MODE_CHANGED, bytes([1])))

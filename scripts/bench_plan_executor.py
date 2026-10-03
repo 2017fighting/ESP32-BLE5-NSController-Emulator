@@ -190,7 +190,15 @@ class ControlLink:
         """
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            self.ser.read(65536)  # drain whatever the boot produced
+            chunk = self.ser.read(65536)  # drain whatever the boot produced
+            # Kept as noise (the counters are not touched: they describe the run,
+            # §34's instrument). The boot banner is not the only thing here — a
+            # console that reconnects while the board is resetting logs its
+            # connection interval into this window, and #35's comparison against
+            # the console's own link would otherwise have to be quoted from
+            # another session.
+            if chunk:
+                self._keep_noise(chunk)
             self.buf.clear()
             self.pending.clear()
             try:
@@ -202,6 +210,19 @@ class ControlLink:
 
     def close(self) -> None:
         self.ser.close()
+
+    def flush_noise(self) -> None:
+        """Keeps a trailing non-frame remainder as noise.
+
+        `_read_frames` records a noise *segment* — the bytes before a delimiter it
+        found — so a log block that arrives after the last frame of a read stays in
+        the buffer. The `staging closed:` line of #34 and #35's `macro meter:`
+        block both arrive that way, with the device quiet behind them, so the
+        caller needs one explicit flush before reading `noise_log`.
+        """
+        if self.buf and b"\x00" not in self.buf:
+            self._record_noise(self.buf)
+            self.buf.clear()
 
     def _keep_noise(self, seg) -> None:
         if self.noise_log is not None:

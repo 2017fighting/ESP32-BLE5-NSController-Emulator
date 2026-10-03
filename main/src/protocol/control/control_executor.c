@@ -174,6 +174,8 @@ static bool resolve_handoff(control_executor_t *ex, control_state_t *st, uint32_
 {
     ex->state = CONTROL_EX_RUNNING;
     if (ex->handoff == CONTROL_EX_HANDOFF_RESUME) {
+        /* §4.7's re-subscribe continues the same loop: the clock and the frame
+         * survive, so this is not a restart and must not be counted as one. */
         return apply_record(ex, st, ex->frame);
     }
     ex->base_ms = (ex->handoff == CONTROL_EX_HANDOFF_LOOP) ? (ex->base_ms + ex->loop_ms) : now_ms;
@@ -183,7 +185,13 @@ static bool resolve_handoff(control_executor_t *ex, control_state_t *st, uint32_
     ex->frame_end_ms = ex->base_ms +
                        ((ex->count == 1) ? ex->loop_ms : record_hold(ex, 0));
     ex->has_applied = false;
-    return apply_record(ex, st, 0);
+    bool applied = apply_record(ex, st, 0);
+    if (applied && ex->io_set && ex->io.loop_restarted != NULL) {
+        /* After the write, so the interval a bench measures is the one the
+         * report carries rather than the one the executor intended. */
+        ex->io.loop_restarted(ex->io.ctx, now_ms);
+    }
+    return applied;
 }
 
 uint8_t control_executor_arm(control_executor_t *ex, control_state_t *st, uint32_t now_ms)

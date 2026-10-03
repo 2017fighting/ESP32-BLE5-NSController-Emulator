@@ -212,7 +212,10 @@ loop boundary it commits the neutral, then waits for `swap_request` to clear —
 has taken that commit — or for a 50 ms bound, and only then writes record 0. The bound exists
 so an absent console, whose report task never reaches the swap, cannot stall a replay; §4.6's
 "committed and transmitted" is what makes the wait necessary, and the bound is what makes it
-safe.
+safe. **Measured, with a console subscribed, the wait is one report period — and with nothing
+subscribed it is zero** (the same plans then loop at `loop_ms` exactly, min = mean = max), so the
+50 ms bound is a bound and not a cost. §7.5 carries the number; #35 measured it
+(`macro-timing-bench.md` §2–§3).
 
 **This is the transmission cost of the neutral, not a scheduled gap.** §5.4's "no inter-loop
 gap" names what the wait is not: there is no dwell, no sleep, and no frame the design holds
