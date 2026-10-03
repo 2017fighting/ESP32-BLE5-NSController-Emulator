@@ -59,13 +59,18 @@ confirmed or falsified.
 `gap.c`'s advertise-restart callback overflowed the 2048-byte timer-service stack on **8 of 19
 disconnects**, each time with `rst:0xc` (§7.6). Every disconnect fired the timer at +3.00 s, so
 the split was not "which disconnects reached the callback"; it was a stack sitting at its limit
-and tipping over non-deterministically. The rate is DEBUG-influenced; the fragility is
-structural.
+and tipping over non-deterministically. The rate is **a property of the pre-fix console path,
+not of this build**: on the shipped release build (`MCU_DEBUG` off, `LOG_MAXIMUM_LEVEL=INFO`,
+115200) at `HEAD`, a full sleep/wake session measured **0 reboots in 21 disconnects**, with 0
+overflows and 0 `rst:0xc` (`link-drop-bench.md` §2, §4). The fragility was structural; the rate
+does not generalise.
 
-*(The overflow itself is **fixed and benched at `HEAD`** (§7.6). That section also reattributes
-the observation above: the 8/19 rate measured the pre-fix *console path*, not `HEAD`, where the
-same callback is latent rather than manifest. The observation stays as measured, and the policy
-below is unchanged — a `boot_id` change has causes beyond this callback.)*
+*(The overflow itself is **fixed and benched at `HEAD`** (§7.6), and the release measurement
+above is the second half of that correction. #27 reattributed the 8/19 rate to the pre-fix
+*console path* on the base firmware — `HEAD`'s callback was latent at **52 B of 2048** and did not
+tip in 41 disconnects even at DEBUG — and then moved `ble_advertise()` off the timer task. So the
+observation stays as measured, and the policy below is unchanged: a `boot_id` change has causes
+beyond this callback.)*
 
 **The container's consequence is not "it is fixed now" — it is "expect a reboot anyway".**
 A container watching `boot_id` for the ADR-0004 recovery flow must tolerate a device restart
@@ -131,7 +136,7 @@ These are **known gaps**, carried in §12.3, not silent assumptions:
 
 | Gap | Why it is open |
 | --- | --- |
-| **G-5** — is the console content with a pass resumed mid-press after a link drop? | needs a working `MACRO` mode on the bench to present the condition |
+| **G-5** — ~~is the console content with a pass resumed mid-press after a link drop?~~ **Answered.** The condition was presented — a run holding A, dropped on the press record — and the policy held: **exactly one `STOP`**, the device left `IDLE` with a plain `CONTAINER_STOP`, the stop's neutral the run's last write, and **no resume** or second `START` on reconnect. The console's own re-subscribe ran the executor's RESUME path earlier in the same run, so the mechanism was present and reachable. `link-drop-bench.md` §1, §3 the observation | closed by [Bench: link-drop behaviour — mid-press resume and the release-build reboot rate](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/38) |
 | **G-4** — ~~is a macro run harmless against an absent console?~~ **Answered.** It is harmless and silent: the container allows the run and warns, the executor walks every record, **zero** notifications go out, the handoff is vacuous, and the mode returns `IDLE` with `CONTAINER_STOP` — nothing a console could be surprised by. §7.5 carries the numbers; `macro-timing-bench.md` §3 the observation | closed by [Bench: plan-executor timing, with and without a console (G-16, G-4)](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/35) |
 | **G-6** — does per-scan freshness require an **observable** unplace through the PN7160 path? | the console never enters `.nfp`, so neither half can be checked |
 | **G-6** — does freshness actually key on the UID on NS2? | proven on NS1 through emuiibo's random-UUID toggle; the NS2-through-PN7160 equivalence is an inference |
@@ -141,5 +146,5 @@ The container's policy of §9.3 is chosen so that **none of the four gaps can pr
 input on the console**: the risky half (a resumed mid-press pass) is stopped rather than
 risked, and the freshness half is a superset (always emit the gap) rather than an assumption.
 That is the point of deciding policy on unverified facts: pick the branch that is safe under
-either answer. Two of the four were then closed by measurement — **G-4** and **G-16** — and the
-table above says with which numbers.
+either answer. Three of the four were then closed by measurement — **G-4**, **G-5** and
+**G-16** — and the table above says with which numbers.

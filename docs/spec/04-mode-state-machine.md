@@ -257,9 +257,11 @@ jump backward, indistinguishable from a bug.
 and only a person at the board will notice. That is the price of ADR-0003, and the mitigation
 is the BOOT panic stop, not a watchdog.
 
-**What is not settled here:** whether the console is content with a pass resumed mid-press.
-The container's answer is to stop the run on a console link drop rather than find out
-(chapter 9), which leaves the question open as a known gap (G-5).
+**Settled, and it agrees with the policy:** whether the console is content with a pass resumed
+mid-press. The bench presented the condition — a run holding A, dropped while the press was on
+the wire — and the container's stop ended it before the console returned; the device's last write
+was the neutral and nothing resumed (§9.4, `link-drop-bench.md` §3). Stopping on a console link
+drop (chapter 9) is what keeps the question from having to be answered, and it held.
 
 ## 4.8 Boot state
 

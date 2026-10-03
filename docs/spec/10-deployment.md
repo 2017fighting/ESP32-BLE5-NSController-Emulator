@@ -77,7 +77,7 @@ lives in NVS on the board — but see the stale-bond trap in §10.6.
 | --- | --- | --- |
 | **DTR/RTS asserted** | zero bytes from the port, forever; `SerialException: device reports readiness to read but returned no data` | open with `dsrdtr=False, rtscts=False`, `setDTR(False)`/`setRTS(False)`, and again in `finally` (§8.3) |
 | **Extended advertising** | the board advertises, a phone connects, nRF Connect shows byte-correct Nintendo manufacturer data — and the console's grip-order screen **never lists it** | legacy advertising; `# CONFIG_BT_NIMBLE_EXT_ADV is not set` (already set for S3) |
-| **Stale NVS bond** | after pairing to one console, a **different** console cannot see the board: it wake-advertises (`g_adv_opcode = 0x81`) to the console it remembers | erase NVS (`idf.py -p <port> erase-flash`) and re-pair |
+| **Stale NVS bond** | the board wake-advertises (`g_adv_opcode = 0x81`) to the console it remembers, so a **different** console — or the same one sitting on the grip-order screen — never lists it. `PAIR_UNPAIR` clears the bond but **does not fix this**: `ble_advertise()` early-returns while an advert is active, so the stale bytes keep going out | erase the bond **and let the board reboot**, so it re-advertises pairable: `python -m esptool --chip esp32s3 -p <port> erase_region 0x9000 0x6000` (or `idf.py -p <port> erase-flash`), then re-pair from the grip-order screen. Measured this session: `link-drop-bench.md` §5 |
 | **Wrong port** | `/dev/ttyUSB0` is present and `idf.py monitor` shows nothing useful | the S3's control plane is the **CH9102 bridge** (`1a86:55d3` → `/dev/ttyACM0`); `/dev/ttyUSB0` on the bench host was an unrelated ESP32-D0WDQ6 |
 | **Wrong port, macOS** | a `usbmodem*` node is opened and yields nothing, or the container is handed the wrong one | macOS has neither `/dev/ttyACM*` nor `/dev/ttyUSB0`, and this host carries **two** `usbmodem` nodes — the board and an unrelated AV adapter. Resolve by USB Serial Number, never by glob (§10.7) |
 | **The old firmware's identity** | the port enumerates as `057e:2009 Nintendo Pro Controller` | that is the previous **unrelated** firmware; `Hello`'s `fw_version` is what answers "which firmware is this", not VID/PID |
@@ -186,6 +186,7 @@ These are not optional and each one reads as a bug in six weeks:
 | **The container never writes the key anywhere** | ADR-0012 |
 | **No WiFi, no host networking, no privileged mode, no named volumes** | ADR-0002 |
 | **Log at `INFO` or lower for any timing work** | on a DEBUG build the report rate is set by the UART log budget, not by `CONFIG_HID_REPORT_INTERVAL` (§7.5) |
+| **To let the console sleep, the board must be off or unpaired** | a powered bonded board wake-advertises 3 s after every drop, and a sleeping console keeps scanning for its bonded controllers; it reconnects, its own resumed reports wake it to the lock screen, and it sleeps again — so the console cannot stay asleep while the board advertises. The device watches neither link (ADR-0008), so no container policy can intervene (`console-lifecycle-bench.md` §3.4; `link-drop-bench.md` §2) |
 
 ## 10.6 First run, in order
 

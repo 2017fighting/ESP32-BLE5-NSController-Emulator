@@ -115,8 +115,9 @@ sleeps again. Loop. This is the console-half mirror of §9.1's "wake needs nothi
 seen from the other end: nothing needs re-sending, and nothing can stop it either. The device
 watches neither link (ADR-0008), so no container policy can intervene; the operational escape
 is unplug or unpair. It is recorded here rather than amended into §9/§10 — promoting a
-deployment rule ("to let the console sleep, the board must be off or unpaired") belongs to the
-deployment/operational-rules pass (#38's ticket corrects §9.2/§9.4 and is the natural rider).
+deployment rule ("to let the console sleep, the board must be off or unpaired") was left to the
+deployment/operational-rules pass. **That pass was #38, and the rule now lives in §10.5**
+(`link-drop-bench.md` §2 observed the same sleep/wake loop again).
 
 ### 3.5 The rotation half is pinned offline, not benched
 
@@ -138,9 +139,10 @@ reconnect, so the rotation has two real edges to hang on and the idempotency per
 
 ## 5. Still open
 
-- **#38** — mid-press resume and the release-build reboot rate; this ticket's stop-on-drop is
-  the policy #38 exists to verify never bites, and the neutral-across-a-drop check is #38's,
-  not this one's.
+- **#38** — ~~mid-press resume and the release-build reboot rate~~ **Closed.** This ticket's
+  stop-on-drop is the policy #38 verified never bites (one `STOP`, `IDLE`, no resume), and the
+  neutral-across-a-drop check was #38's; the release build read **0 reboots in 21 disconnects**
+  (`link-drop-bench.md`).
 - **#33** — the 2 s request timeout under a reconnect-time log flood (§3.1) is a bench fact for
   the baud ticket; at 921600 the flood drains 8× faster.
 - **#25/#32/#36** — the rotation on real hardware, once `features.amiibo` exists to place
