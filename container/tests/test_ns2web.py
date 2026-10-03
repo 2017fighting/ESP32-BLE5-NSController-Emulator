@@ -35,7 +35,9 @@ from container.ns2container import Settings, create_app  # noqa: E402
 from container.ns2device import StubDevice  # noqa: E402
 from container.ns2sealing import KeyMaterial, SealedTag, identity_of  # noqa: E402
 
-TAG = bytes.fromhex("0411fe63ca526c81") + bytes(532)
+#: The sealing fixture: a synthetic key and a tag that verifies under it.
+TAG = support.sealing_fixture("tag")
+KEY_BYTES = support.sealing_fixture("key")
 
 
 def fake_sealer(image: bytes, key: KeyMaterial) -> SealedTag:
@@ -52,7 +54,7 @@ class WebSeamTest(unittest.IsolatedAsyncioTestCase):
         (root / "keys").mkdir()
         shutil.copy(support.correction_macro_path(), root / "macros" / "correction.json")
         (root / "amiibo" / "Zelda" / "Link.bin").write_bytes(TAG)
-        (root / "keys" / "key_retail.bin").write_bytes(bytes(160))
+        (root / "keys" / "key_retail.bin").write_bytes(KEY_BYTES)
         static = root / "dist"
         (static / "assets").mkdir(parents=True)
         (static / "index.html").write_text("<!doctype html><title>ns2</title>")
@@ -80,7 +82,7 @@ class WebSeamTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("state", payload)
         self.assertIn("logs", payload)
         self.assertEqual(payload["state"]["control"]["link"], "UP")
-        self.assertEqual(payload["state"]["key"], "KEY_UNVERIFIED")
+        self.assertEqual(payload["state"]["key"], "KEY_OK")
 
     async def test_a_verb_returns_the_resulting_state(self):
         response = await self.client.post("/api/start", json={"macroId": "correction.json"})

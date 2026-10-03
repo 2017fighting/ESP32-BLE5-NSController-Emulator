@@ -128,7 +128,7 @@ follow their component defaults. No bespoke corner values.
   link dropped) vs `ERROR` (destructive). `BOOT_LOCAL` is a distinct reason, not
   an error; with an error also pending it reads as both — stopped by hand *and*
   broken.
-- **Key state** — `KEY_READY` | `KEY_ABSENT` | `KEY_INVALID` | `KEY_UNVERIFIED`,
+- **Key state** — `KEY_OK` | `KEY_ABSENT` | `KEY_INVALID` | `KEY_UNVERIFIED`,
   rendered **separately** from `LIBRARY_EMPTY` and from
   `features.amiibo == false`. Three different problems, three different fixes.
 - **Recovery** — `SAME_POWER` (keep state, re-`STATUS`), `NEW_POWER` (state

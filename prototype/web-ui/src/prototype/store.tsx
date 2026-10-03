@@ -156,7 +156,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (!s.selectedFigureId || s.mode !== 'IDLE' || s.control.link !== 'UP') return s
       // #13: KEY_UNVERIFIED is not a lock — verification completes at the first
       // placement. Only an absent or invalid key blocks.
-      const keyUsable = s.key === 'KEY_READY' || s.key === 'KEY_UNVERIFIED'
+      const keyUsable = s.key === 'KEY_OK' || s.key === 'KEY_UNVERIFIED'
       if (!keyUsable || s.amiiboLibrary !== 'READY' || !s.firmware?.features.amiibo) return s
       const figure = figureById(s.selectedFigureId)
       const identity = mintIdentity()

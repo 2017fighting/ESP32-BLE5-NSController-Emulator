@@ -32,14 +32,18 @@ from container.ns2device import (  # noqa: E402
     StubDevice,
 )
 from container.ns2sealing import (  # noqa: E402
+    KeyInvalid,
     KeyMaterial,
     SealedTag,
-    SealingUnavailable,
+    Sealer,
     bcc0_for,
     identity_of,
 )
 
-TAG = bytes.fromhex("0411fe63ca526c81") + bytes(532)
+#: The sealing fixture: a synthetic key and a tag that verifies under it, so the
+#: container's four key states are reachable without any retail key material.
+TAG = support.sealing_fixture("tag")
+KEY_BYTES = support.sealing_fixture("key")
 
 
 def fake_sealer(image: bytes, key: KeyMaterial) -> SealedTag:
@@ -74,7 +78,7 @@ class FlakySealer:
 
     def __call__(self, image: bytes, key: KeyMaterial) -> SealedTag:
         if self.failed:
-            raise SealingUnavailable("the round trip broke between placements")
+            raise KeyInvalid("the round trip broke between placements")
         return self.inner(image, key)
 
 
@@ -109,19 +113,36 @@ class SlowStubDevice(StubDevice):
         await super().load_plan(plan_hash, plan, on_progress=None)
 
 
+class RecordingDevice(StubDevice):
+    """Keeps every byte the container hands the device, so "nothing leaked" is checkable."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.payloads: list[bytes] = []
+
+    async def load_plan(self, plan_hash, plan, *, on_progress=None):
+        self.payloads.append(bytes(plan_hash) + bytes(plan))
+        await super().load_plan(plan_hash, plan, on_progress=on_progress)
+
+    async def place(self, tag: bytes, *, on_progress=None) -> None:
+        self.payloads.append(bytes(tag))
+        await super().place(tag, on_progress=on_progress)
+
+
 class ControllerTest(unittest.IsolatedAsyncioTestCase):
-    def build_settings(self, *, with_key: bool = True) -> Settings:
+    def build_settings(self, *, with_key: bool = True, with_figure: bool = True) -> Settings:
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         (root / "macros").mkdir()
         (root / "amiibo" / "Zelda").mkdir(parents=True)
         shutil.copy(support.correction_macro_path(), root / "macros" / "correction.json")
         (root / "macros" / "bad.json").write_text('[{"t": 0, "ev": {"type": "motion"}}]')
-        (root / "amiibo" / "Zelda" / "Link.bin").write_bytes(TAG)
+        if with_figure:
+            (root / "amiibo" / "Zelda" / "Link.bin").write_bytes(TAG)
         key_file = root / "keys" / "key_retail.bin"
         key_file.parent.mkdir()
         if with_key:
-            key_file.write_bytes(bytes(160))
+            key_file.write_bytes(KEY_BYTES)
         return Settings(
             macro_dir=root / "macros",
             amiibo_dir=root / "amiibo",
@@ -130,8 +151,10 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
             static_dir=root / "dist",
         )
 
-    async def start_controller(self, *, device=None, with_key: bool = True, sealer=fake_sealer):
-        settings = self.build_settings(with_key=with_key)
+    async def start_controller(
+        self, *, device=None, with_key: bool = True, with_figure: bool = True, sealer=fake_sealer
+    ):
+        settings = self.build_settings(with_key=with_key, with_figure=with_figure)
         self.controller = create_controller(
             settings,
             device=device if device is not None else StubDevice(),
@@ -161,7 +184,7 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["firmware"]["features"]["amiibo"], True)
         self.assertEqual(snapshot["macroLibrary"], "READY")
         self.assertEqual(snapshot["amiiboLibrary"], "READY")
-        self.assertEqual(snapshot["key"], "KEY_UNVERIFIED")
+        self.assertEqual(snapshot["key"], "KEY_OK")
         self.assertEqual([m["status"] for m in snapshot["macros"]], ["rejected", "ready"])
 
     async def test_start_then_stop_moves_only_through_the_device(self):
@@ -206,7 +229,7 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
         snapshot = controller.snapshot()
         self.assertEqual(snapshot["mode"], "AMIIBO")
         self.assertEqual(snapshot["placement"]["figureId"], "Zelda/Link.bin")
-        self.assertEqual(snapshot["placement"]["identity"], "0411feca526c81")
+        self.assertEqual(snapshot["placement"]["identity"], identity_of(TAG).hex())
         self.assertEqual(snapshot["placement"]["index"], 1)
         await controller.unplace()
         self.assertEqual(controller.snapshot()["mode"], "IDLE")
@@ -501,7 +524,7 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
         # restart. `Rescan` is for the libraries only.
         controller = await self.start_controller(with_key=False)
         self.assertEqual(controller.snapshot()["key"], "KEY_ABSENT")
-        self.controller.keys.key_file.write_bytes(bytes(160))
+        self.controller.keys.key_file.write_bytes(KEY_BYTES)
         await controller.rescan()
         self.assertEqual(controller.snapshot()["key"], "KEY_ABSENT")
 
@@ -515,20 +538,163 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
         # Nothing reached the wire: the device has no committed plan.
         self.assertIsNone(controller.snapshot()["plan"])
 
-    async def test_a_key_that_fails_to_seal_sets_key_invalid(self):
-        def broken_sealer(image: bytes, key: KeyMaterial) -> SealedTag:
-            from container.ns2sealing import KeyInvalid
+    async def test_a_key_without_a_library_tag_is_unverified(self):
+        # §6.7: the honest answer when a key is mounted but nothing can prove it.
+        controller = await self.start_controller(with_figure=False)
+        self.assertEqual(controller.snapshot()["key"], "KEY_UNVERIFIED")
+        self.assertEqual(controller.snapshot()["amiiboLibrary"], "EMPTY")
 
+    async def test_a_successful_first_placement_completes_the_verification(self):
+        # §6.7: "verification completes at the first placement" — the state moves
+        # with it, or the badge keeps calling a proven key unproven.
+        controller = await self.start_controller(with_figure=False, sealer=Sealer())
+        self.assertEqual(controller.snapshot()["key"], "KEY_UNVERIFIED")
+        (controller.settings.amiibo_dir / "Zelda" / "Link.bin").write_bytes(TAG)
+        await controller.rescan()
+        await controller.place_figure("Zelda/Link.bin")
+        self.assertEqual(controller.snapshot()["key"], "KEY_OK")
+
+    async def test_a_corrupt_figure_after_verification_is_not_the_keys_fault(self):
+        # The other half of the same rule: once the key has proved itself, a dump
+        # that will not unpack is the figure's problem (§6.7, §8.6's three locks).
+        controller = await self.start_controller(with_figure=False, sealer=Sealer())
+        (controller.settings.amiibo_dir / "Zelda" / "Link.bin").write_bytes(TAG)
+        corrupt = bytearray(TAG)
+        corrupt[0x080] ^= 0x01
+        (controller.settings.amiibo_dir / "Zelda" / "Corrupt.bin").write_bytes(bytes(corrupt))
+        await controller.rescan()
+        await controller.place_figure("Zelda/Link.bin")
+        self.assertEqual(controller.snapshot()["key"], "KEY_OK")
+        with self.assertRaises(ControllerError) as caught:
+            await controller.place_figure("Zelda/Corrupt.bin")
+        self.assertEqual(caught.exception.code, "FIGURE_INVALID")
+        self.assertEqual(controller.snapshot()["key"], "KEY_OK")
+
+    async def test_a_rejected_key_is_still_named_in_the_startup_line(self):
+        # §6.7: the fingerprint is what tells two different wrong keys apart.
+        settings = self.build_settings(with_key=False)
+        settings.key_file.write_bytes(bytes(160))
+        self.controller = create_controller(settings, device=StubDevice(), sealer=fake_sealer)
+        await self.controller.start()
+        self.assertEqual(self.controller.snapshot()["key"], "KEY_INVALID")
+        line = next(
+            message
+            for message in (entry["message"] for entry in self.controller.logs())
+            if message.startswith("key: ")
+        )
+        self.assertIn("160 B", line)
+        self.assertIn("fp=sha256:", line)
+        self.assertIn("state=KEY_INVALID", line)
+        self.assertNotIn(bytes(160).hex(), line)
+
+    async def test_a_key_that_fails_to_seal_sets_key_invalid(self):
+        # An unverified key (no library tag at startup) is verified by the first
+        # placement; a failure there is the key's, and the placement is refused.
+        def broken_sealer(image: bytes, key: KeyMaterial) -> SealedTag:
             raise KeyInvalid("unpack round trip failed")
 
-        settings = self.build_settings()
+        settings = self.build_settings(with_figure=False)
         self.controller = create_controller(settings, device=StubDevice(), sealer=broken_sealer)
         await self.controller.start()
+        self.assertEqual(self.controller.snapshot()["key"], "KEY_UNVERIFIED")
+        # The figure arrives after startup, so rung 3 never saw one and the
+        # placement is where the verification lands.
+        (settings.amiibo_dir / "Zelda" / "Link.bin").write_bytes(TAG)
+        await self.controller.rescan()
         with self.assertRaises(ControllerError) as caught:
             await self.controller.place_figure("Zelda/Link.bin")
         self.assertEqual(caught.exception.code, "KEY_INVALID")
         self.assertEqual(self.controller.snapshot()["key"], "KEY_INVALID")
         self.assertEqual(self.controller.snapshot()["mode"], "IDLE")
+
+    async def test_a_verified_key_blames_the_figure_not_the_key(self):
+        # The three locks stay distinct (§8.6): a key that verified against the
+        # library is not accused because one dump will not seal.
+        def broken_sealer(image: bytes, key: KeyMaterial) -> SealedTag:
+            raise KeyInvalid("this dump will not unpack")
+
+        settings = self.build_settings()
+        self.controller = create_controller(settings, device=StubDevice(), sealer=broken_sealer)
+        await self.controller.start()
+        self.assertEqual(self.controller.snapshot()["key"], "KEY_OK")
+        with self.assertRaises(ControllerError) as caught:
+            await self.controller.place_figure("Zelda/Link.bin")
+        self.assertEqual(caught.exception.code, "FIGURE_INVALID")
+        self.assertEqual(self.controller.snapshot()["key"], "KEY_OK")
+        self.assertEqual(self.controller.snapshot()["mode"], "IDLE")
+
+
+class KeyContainmentTest(unittest.IsolatedAsyncioTestCase):
+    """ADR-0012 and §6.7: the key is read once, and never leaves the process.
+
+    Not merely "the code does not read it": the screens' state, the Logs screen
+    and every byte handed to the device are checked for it, with the real sealer
+    and a real placement.
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        (root / "macros").mkdir()
+        (root / "amiibo" / "Zelda").mkdir(parents=True)
+        (root / "amiibo" / "Zelda" / "Link.bin").write_bytes(TAG)
+        key_file = root / "keys" / "key_retail.bin"
+        key_file.parent.mkdir()
+        key_file.write_bytes(KEY_BYTES)
+        self.settings = Settings(
+            macro_dir=root / "macros",
+            amiibo_dir=root / "amiibo",
+            key_file=key_file,
+            key_dir=key_file.parent,
+            static_dir=root / "dist",
+        )
+        self.device = RecordingDevice()
+        self.controller = create_controller(self.settings, device=self.device, sealer=Sealer())
+        await self.controller.start()
+        await self.controller.place_figure("Zelda/Link.bin")
+
+    async def asyncTearDown(self):
+        await self.controller.stop()
+        self.tmp.cleanup()
+
+    def test_the_key_never_appears_in_the_state_the_screens_see(self):
+        import json
+
+        rendered = json.dumps(self.controller.snapshot())
+        self.assertNotIn(KEY_BYTES.hex(), rendered)
+        self.assertNotIn(KEY_BYTES[:16].hex(), rendered)
+
+    def test_the_key_never_appears_in_a_log_line(self):
+        messages = [line["message"] for line in self.controller.logs()]
+        self.assertTrue(any("key: " in message for message in messages))
+        self.assertFalse(any(KEY_BYTES.hex() in message for message in messages))
+        self.assertFalse(any(KEY_BYTES[:16].hex() in message for message in messages))
+
+    def test_the_key_never_appears_in_a_frame(self):
+        # Any 16-byte window of the key, in case a prefix or a slice were used.
+        windows = [KEY_BYTES[i : i + 16] for i in range(len(KEY_BYTES) - 15)]
+        for payload in self.device.payloads:
+            for window in windows:
+                self.assertNotIn(window, payload)
+
+    def test_the_startup_line_names_the_key_without_printing_it(self):
+        line = next(
+            message
+            for message in (entry["message"] for entry in self.controller.logs())
+            if message.startswith("key: ")
+        )
+        self.assertIn(str(self.settings.key_file), line)
+        self.assertIn("single file", line)
+        self.assertIn("160 B", line)
+        self.assertIn("fp=sha256:", line)
+        self.assertIn("state=KEY_OK", line)
+
+    def test_the_placement_used_the_real_sealer(self):
+        snapshot = self.controller.snapshot()
+        self.assertEqual(snapshot["mode"], "AMIIBO")
+        placed = self.device.payloads[-1]
+        self.assertEqual(snapshot["placement"]["identity"], identity_of(placed).hex())
+        self.assertNotEqual(identity_of(placed), identity_of(TAG))
 
 
 if __name__ == "__main__":

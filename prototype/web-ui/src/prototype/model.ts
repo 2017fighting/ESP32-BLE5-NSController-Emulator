@@ -16,7 +16,7 @@ export type StopReason = 'CONTAINER_STOP' | 'BOOT_LOCAL' | 'CONSOLE_LOST' | 'ERR
 export type ControlLink = 'UP' | 'BUSY' | 'DOWN'
 export type ConsoleLink = 'CONNECTED' | 'ADVERTISING' | 'DISCONNECTED'
 export type RecoveryCase = 'SAME_POWER' | 'NEW_POWER' | 'DIFFERENT_FIRMWARE'
-export type KeyState = 'KEY_READY' | 'KEY_ABSENT' | 'KEY_INVALID' | 'KEY_UNVERIFIED'
+export type KeyState = 'KEY_OK' | 'KEY_ABSENT' | 'KEY_INVALID' | 'KEY_UNVERIFIED'
 export type LibraryState = 'READY' | 'EMPTY'
 
 export interface DeviceFeatures {
@@ -262,7 +262,7 @@ const BASE_LOGS: LogEntry[] = [
   log(0.062, 'device', 'info', 'I (1290) gap: legacy advertising started'),
   log(0.140, 'container', 'info', 'macro library: 5 files scanned, 4 compiled, 1 rejected (宏/天妇罗巢穴宏2.json)'),
   log(0.141, 'container', 'warn', 'macro rejected: 宏/天妇罗巢穴宏2.json:118 unknown event type "motion" — whole macro discarded'),
-  log(0.152, 'container', 'info', `key: /keys/key_retail.bin (single file, 160 B) fp=6b1f…c9 state=KEY_READY`),
+  log(0.152, 'container', 'info', `key: /keys/key_retail.bin (single file, 160 B) fp=sha256:6b1f0a2c… state=KEY_OK`),
   log(0.153, 'container', 'info', 'amiibo library: 955 .bin indexed across 27 series, 846 distinct IDs'),
   log(0.160, 'container', 'info', 'console link: advertising as Pro Controller (057e:2009)'),
   log(0.422, 'device', 'info', 'I (1640) gap: connection established, conn_itvl=4'),
@@ -284,8 +284,8 @@ function base(id: ScenarioId): DeviceState {
     uploading: null,
     selectedFigureId: null,
     placement: null,
-    key: 'KEY_READY',
-    keySpelling: 'single file (key_retail.bin)',
+    key: 'KEY_OK',
+    keySpelling: 'single file',
     macroLibrary: 'READY',
     amiiboLibrary: 'READY',
     stopReason: 'CONTAINER_STOP',
@@ -392,13 +392,13 @@ export function buildState(id: ScenarioId): DeviceState {
     case 'key-invalid':
       s.selectedFigureId = 'link-totk'
       s.key = 'KEY_INVALID'
-      s.keySpelling = 'pair (unfixed-info.bin + locked-secret.bin)'
+      s.keySpelling = 'two files (unfixed-info.bin + locked-secret.bin)'
       s.lastError = { code: 'KEY_INVALID', message: 'Key material at /keys/ failed the nfc3d round-trip (HMAC mismatch).' }
       break
     case 'key-unverified':
       s.selectedFigureId = 'link-totk'
       s.key = 'KEY_UNVERIFIED'
-      s.keySpelling = 'single file (key_retail.bin)'
+      s.keySpelling = 'single file'
       break
     case 'amiibo-library-empty':
       s.selectedFigureId = null

@@ -14,13 +14,13 @@ The amiibo subsystem relies on two distinct coordinate systems: **tag-image coor
 
 ### 1. Coordinate Systems and Plaintext Cache Architecture
 **Claim:** The NTAG215 dump exists in two coordinate systems; the container's plaintext cache uses amiitool's 520-byte internal coordinate system where the identity block is located at `0x1D4`.  
-**Sources:** `amiitool/amiibo.c:38-60`, `amiitool/include/nfc3d/amiibo.h:17`, `docs/spec/06-amiibo.md:60-78`.  
+**Sources:** `amiitool/amiibo.c:53-71`, `amiitool/include/nfc3d/amiibo.h:15`, `docs/spec/06-amiibo.md:60-78`.  
 **Support:** direct evidence.  
 **Confidence:** high.
 
-amiitool operates on a 520-byte buffer (`NFC3D_AMIIBO_SIZE = 520`, 130 pages × 4 bytes). The remaining 20 bytes of an NTAG215 dump (pages 130–134, tag offsets `0x208`–`0x21B`) are not part of the encrypted/signed amiibo structure; they are preserved verbatim outside amiitool's core transformations (`amiitool/amiitool.c:134-138`).
+amiitool operates on a 520-byte buffer (`NFC3D_AMIIBO_SIZE = 520`, 130 pages × 4 bytes). The remaining 20 bytes of an NTAG215 dump (pages 130–134, tag offsets `0x208`–`0x21B`) are not part of the encrypted/signed amiibo structure; they are preserved verbatim outside amiitool's core transformations (`amiitool/amiitool.c:159-166`).
 
-The mapping between tag-image coordinates and internal coordinates is executed by `nfc3d_amiibo_tag_to_internal` (`amiitool/amiibo.c:38-46`) and inverted by `nfc3d_amiibo_internal_to_tag` (`amiitool/amiibo.c:48-56`). The complete side-by-side mapping across all slices is:
+The mapping between tag-image coordinates and internal coordinates is executed by `nfc3d_amiibo_tag_to_internal` (`amiitool/amiibo.c:53-61`) and inverted by `nfc3d_amiibo_internal_to_tag` (`amiitool/amiibo.c:63-71`). The complete side-by-side mapping across all slices is:
 
 | Slice | Tag-Image Pages | Tag-Image Offset | Internal Offset | Length | Description & Cryptographic Role |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -47,7 +47,7 @@ In the internal coordinate system (and thus the container's plaintext cache):
 
 ### 2. The Exact Unpack and Pack (Sealing) Sequences
 **Claim:** Sealing is a pure function that mints a fresh identity, updates the internal plaintext buffer at `0x1D4` and `0x000`, derives fresh cryptographic keys via DRBG, computes Tag and Data HMACs, encrypts the payload, converts to tag coordinates, and appends configuration trailer pages.  
-**Sources:** `amiitool/amiibo.c:58-118`, `amiitool/amiitool.c:113-145`, `docs/spec/06-amiibo.md:80-99`.  
+**Sources:** `amiitool/amiibo.c:73-135`, `amiitool/amiitool.c:96-111`, `docs/spec/06-amiibo.md:80-99`.  
 **Support:** direct evidence.  
 **Confidence:** high.
 
@@ -128,7 +128,7 @@ Executed on every placement to generate a fresh 540-byte sealed tag:
 
 ### 3. Minimum Faithful Port Surface
 **Claim:** The complete sealing module requires only five cryptographic/structural primitives, eliminating dependencies on full external crypto libraries beyond standard AES-128 and SHA-256.  
-**Sources:** `amiitool/keygen.c:13-39`, `amiitool/drbg.c:13-60`, `amiitool/include/nfc3d/keygen.h:16-30`.  
+**Sources:** `amiitool/keygen.c:14-54`, `amiitool/drbg.c:13-78`, `amiitool/include/nfc3d/keygen.h:16-29`.  
 **Support:** direct evidence.  
 **Confidence:** high.
 
@@ -149,7 +149,7 @@ The sealing port implementation surface consists of:
        nfc3d_keygen_masterkeys tag;  // 80 bytes (locked-secret)
    } nfc3d_amiibo_keys;           // 160 bytes total
    ```
-   Validation ladder check: file size == 160 bytes, `data.magicBytesSize <= 16`, and `tag.magicBytesSize <= 16` (`amiitool/amiibo.c:132-136`).
+   Validation ladder check: file size == 160 bytes, `data.magicBytesSize <= 16`, and `tag.magicBytesSize <= 16` (`amiitool/amiibo.c:149-155`).
 2. **Key Derivation (KDF / DRBG):**
    - **Seed Preparation (`nfc3d_keygen_prepare_seed`):** Concatenate:
      1. `typeString` up to and including the null terminator `\0`.
@@ -175,7 +175,7 @@ The sealing port implementation surface consists of:
 
 ### 4. Sanity Check Against Real Library Tag (`Samus.nfc`)
 **Claim:** Derivation of check bytes `BCC0 = 0x63` and `BCC1 = 0x75` matches both ISO 14443-A standards and the physical dump `Samus.nfc`.  
-**Sources:** `Amiibo/Amiibo NFC/Metroid/Metroid_Dread/Samus.nfc:1-26`, `docs/spec/06-amiibo.md:44-50`, `amiitool/amiibo.c:38-56`.  
+**Sources:** `Amiibo/Amiibo NFC/Metroid/Metroid_Dread/Samus.nfc:1-26`, `docs/spec/06-amiibo.md:44-50`, `amiitool/amiibo.c:53-71`.  
 **Support:** direct evidence.  
 **Confidence:** high.
 
@@ -220,7 +220,7 @@ The formula and the check bytes are completely correct. The prose string `UID = 
 ## Contradictions
 1. **Spec Table vs Canonical amiitool Coordinates (G-9):**
    - `docs/spec/06-amiibo.md:64-67` placed Data HMAC at tag offsets `0x154`–`0x173` and Tag HMAC at `0x174`–`0x1D3`.
-   - `amiitool/amiibo.c:38-56` establishes that in tag coordinates, Tag HMAC is at `0x034`–`0x053` and Data HMAC is at `0x080`–`0x09F`. In internal coordinates, Data HMAC is at `0x008`–`0x027` and Tag HMAC is at `0x1B4`–`0x1D3`. The spec explicitly flagged this as known gap G-9; the amiitool source resolves it definitively.
+   - `amiitool/amiibo.c:53-71` establishes that in tag coordinates, Tag HMAC is at `0x034`–`0x053` and Data HMAC is at `0x080`–`0x09F`. In internal coordinates, Data HMAC is at `0x008`–`0x027` and Tag HMAC is at `0x1B4`–`0x1D3`. The spec explicitly flagged this as known gap G-9; the amiitool source resolves it definitively.
 2. **UID String Representation in Spec 06.3:**
    - `docs/spec/06-amiibo.md:46` wrote the 7-byte UID as `04 11 FE 63 CA 52 6C`, whereas `Samus.nfc` and the BCC equations prove the 7-byte UID is `04 11 FE CA 52 6C 81`.
 
@@ -244,6 +244,34 @@ None. All algorithms, key formats, memory layouts, offsets, and check bytes have
 
 ---
 
+## Implementation note (issue #32)
+
+The port landed in `container/ns2sealing/` (`crypto.py` is the kernel — keygen, DRBG, AES-CTR,
+HMAC — and `api.py` is the tag-image flow), and the drift guard is `fixtures/sealing/`:
+amiitool's own output bytes for a synthetic key, regenerated by
+`scripts/build_sealing_fixture.py` and asserted by `container/tests/test_ns2sealing.py`, so CI
+exercises the round trip with no retail key material vendored.
+
+**Two things the port found that this document did not state:**
+
+1. **`pack` hashes a different buffer than `unpack`.** The data HMAC's first chunk is the
+   *plaintext* payload (`plain + 0x029, 0x18B`), not the ciphertext: `amiibo.c` calls
+   `nfc3d_amiibo_cipher` *after* the signatures are computed. A port that hashes its output
+   buffer produces a tag whose data HMAC verifies only against itself — every figure fails
+   against the console, and against amiitool. `unpack` has no such split (its buffer is
+   already the plaintext), which is what makes the mistake easy to miss.
+2. **The corpus contains a dump amiitool refuses.** `Amiibo/Amiibo Bin/Pikmin Amiibo/Pikmin.bin`
+   fails both HMAC checks under the retail key, in the C implementation as well as this port;
+   950 of the clone's 951 figure images round-trip byte-identically. This is why §6.7's rung 3
+   samples a bounded number of figures rather than one (amended in §6.7).
+
+On the real corpus the port costs **~0.22 ms** per `unpack`+`pack`, against §6.4's
+sub-millisecond claim for the host re-seal.
+
+Every `amiitool` citation in §1–§3 above was re-checked against the pin while porting; several
+line numbers were adrift and are corrected in place (`nfc3d_amiibo_tag_to_internal` is at
+`amiibo.c:53`, not `:38`). Claims survive the correction; the line numbers did not.
+
 ## Next Steps
-1. Implement the sealing module container-side in Python/C conforming strictly to the 8-slice mapping table and step sequences documented above.
-2. Build an offline unit test verifying that `pack(unpack(Samus.bin))` produces an image byte-identical to `Samus.bin`, and that sealing with a randomized UID passes both HMAC verifications.
+1. Implement the sealing module container-side in Python/C conforming strictly to the 8-slice mapping table and step sequences documented above. **Done** — `container/ns2sealing/`, issue #32.
+2. Build an offline unit test verifying that `pack(unpack(Samus.bin))` produces an image byte-identical to `Samus.bin`, and that sealing with a randomized UID passes both HMAC verifications. **Done** — `fixtures/sealing/` for CI (amiitool's own bytes), plus the same assertion over every real figure in `container/tests/test_ns2sealing.py`, which skips when the clone or the key is absent.

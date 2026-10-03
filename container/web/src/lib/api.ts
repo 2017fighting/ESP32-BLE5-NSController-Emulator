@@ -4,7 +4,7 @@
  *
  * A rejected verb carries a typed error — a wire `ERROR` code (`BAD_STATE`,
  * `PLAN_TOO_LARGE`, …) or a container-local one (`KEY_ABSENT`,
- * `SEALING_UNAVAILABLE`, …) — and this module keeps the code, so the store can
+ * `FIGURE_INVALID`, …) — and this module keeps the code, so the store can
  * say the right thing instead of "request failed".
  */
 

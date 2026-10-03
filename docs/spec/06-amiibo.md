@@ -209,13 +209,19 @@ mount, read once at startup, validated, held in process memory, and never sent a
 1. **160 bytes**, or the two-file spelling.
 2. The masterkey structure (Nintendo's `typeString`s and `magicBytes` regions), which a random
    160-byte file fails.
-3. An `unpack` round trip against one tag from the mounted library, **requiring both HMACs**.
+3. An `unpack` round trip against the mounted library, **requiring both HMACs** — against a
+   bounded sample of figures (eight, in the index's own order) rather than one, because the
+   corpus ships files whose own signatures do not verify (`Pikmin Amiibo/Pikmin.bin`, which the
+   pinned `amiitool` refuses too), and a single sample would accuse a good key of being the
+   wrong one.
 
 **States:** `KEY_OK`, `KEY_ABSENT`, `KEY_INVALID`, `KEY_UNVERIFIED`. `KEY_UNVERIFIED` exists
 because a user may mount the key without a library, and the honest answer is then "held but
 unproven" rather than "valid" (a lie) or "invalid" (a false accusation). **With no library tag
 at startup, verification completes at the first placement**; a failure there sets
-`KEY_INVALID` and refuses the placement. It **never** falls back to replaying a stored dump
+`KEY_INVALID` and refuses the placement. A failure against a key that already verified is the
+*figure's*, not the key's: that placement is refused, the key keeps `KEY_OK`, and the three
+locks stay distinct. It **never** falls back to replaying a stored dump
 unchanged — that is the one failure mode that looks like success.
 
 **No key is not a startup failure.** The container starts, macros are unaffected, `AMIIBO` is

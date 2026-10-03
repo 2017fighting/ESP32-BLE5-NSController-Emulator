@@ -63,7 +63,7 @@ export function AmiiboPicker({
         <CardTitle className="text-sm">Amiibo library</CardTitle>
         <CardDescription>
           {state.figures.length} tags indexed from <span className="font-mono">/library/amiibo</span> ·{' '}
-          {state.series.length} series. Sealing and key validation land with issue #32.
+          {state.series.length} series. Each placement re-seals under a fresh identity.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">

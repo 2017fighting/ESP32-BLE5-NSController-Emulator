@@ -21,7 +21,7 @@ export type StopReason = 'NONE' | 'CONTAINER_STOP' | 'BOOT_LOCAL' | 'CONSOLE_LOS
 export type ControlLink = 'UP' | 'BUSY' | 'DOWN'
 export type ConsoleLink = 'CONNECTED' | 'ADVERTISING' | 'DISCONNECTED'
 export type RecoveryCase = 'SAME_POWER' | 'NEW_POWER' | 'DIFFERENT_FIRMWARE'
-export type KeyState = 'KEY_READY' | 'KEY_ABSENT' | 'KEY_INVALID' | 'KEY_UNVERIFIED'
+export type KeyState = 'KEY_OK' | 'KEY_ABSENT' | 'KEY_INVALID' | 'KEY_UNVERIFIED'
 export type LibraryState = 'READY' | 'EMPTY'
 
 export interface DeviceFeatures {

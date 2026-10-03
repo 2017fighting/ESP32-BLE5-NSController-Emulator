@@ -45,14 +45,14 @@ from ..ns2device import (
     StopReason,
     TagState,
 )
-from ..ns2sealing import KeyInvalid, KeyMaterial, SealedTag, SealingUnavailable
+from ..ns2sealing import KeyInvalid, KeyMaterial, SealedTag, TagInvalid
 from ..ns2serial import PortBusy, TransportUnavailable
 from .config import Settings
 from .library import AmiiboIndex, KeyState, KeyStatus, KeyStore, MacroEntry, MacroLibrary
 
-#: The sealing seam, injected so tests can substitute a double and #32 can land
-#: the real round trip without the controller moving.
-Sealer = Callable[[bytes, KeyMaterial], SealedTag]
+#: The sealing seam's shape (§8.2), injected so tests can substitute a double
+#: and the controller never depends on the sealer's implementation.
+SealingSeam = Callable[[bytes, KeyMaterial], SealedTag]
 
 logger = logging.getLogger("ns2.container")
 logger.addHandler(logging.NullHandler())  # no lastResort noise until a host configures logging
@@ -126,7 +126,7 @@ class Controller:
         macros: MacroLibrary,
         figures: AmiiboIndex,
         keys: KeyStore,
-        sealer: Sealer,
+        sealer: SealingSeam,
     ) -> None:
         self.device = device
         self.settings = settings
@@ -420,12 +420,12 @@ class Controller:
             if self._key_status.state is KeyState.KEY_INVALID:
                 raise ControllerError(
                     "KEY_INVALID",
-                    "The mounted key failed the unpack round trip; it is not a usable retail key.",
+                    "The mounted key failed the nfc3d round trip; it is not a usable retail key.",
                 )
             raise ControllerError(
-                "SEALING_UNAVAILABLE",
-                "Sealing is not available in this build; the placement is refused locally "
-                "rather than replaying a stored tag unchanged.",
+                "FIGURE_INVALID",
+                f"{entry.source} does not verify under the mounted key — its signatures are "
+                "not this figure's, so it cannot be sealed.",
             )
         await self._device_call("place", self.device.place(sealed.image))
         self._placed_figure_id = figure_id
@@ -621,15 +621,46 @@ class Controller:
         Returns `None` when sealing cannot happen, having already set
         `KEY_INVALID` if that is what the failure proved (§6.7: a failure at a
         placement sets the state; it never falls back to replaying the stored
-        tag unchanged). Callers decide how the failure is surfaced.
+        tag unchanged). With no library tag at startup the key is
+        `KEY_UNVERIFIED`, and the first placement is exactly where verification
+        completes — a failure there is the key's. Once the key is `KEY_OK` the
+        same failure is the figure's (a corrupt tag image), and the key keeps its
+        verdict.
         """
+        material = self._key_status.material
+        if material is None:
+            return None
         try:
-            return self._sealer(image, self._key_status.material)  # type: ignore[arg-type]
-        except SealingUnavailable:
+            sealed = self._sealer(image, material)
+        except (KeyInvalid, TagInvalid) as failure:
+            if self._key_status.state is KeyState.KEY_UNVERIFIED:
+                self._key_status = KeyStatus(
+                    KeyState.KEY_INVALID,
+                    self._key_status.spelling,
+                    None,
+                    detail=str(failure),
+                    length=self._key_status.length,
+                    fingerprint=self._key_status.fingerprint,
+                )
+                self.log(
+                    "container",
+                    "error",
+                    f"key: the first placement failed verification — {failure}",
+                )
             return None
-        except KeyInvalid:
-            self._key_status = KeyStatus(KeyState.KEY_INVALID, self._key_status.spelling, None)
-            return None
+        if self._key_status.state is KeyState.KEY_UNVERIFIED:
+            # §6.7: verification completes at the first placement, so the state
+            # moves with it. Without this the badge keeps calling a proven key
+            # unproven, and the *next* bad figure would be blamed on the key.
+            self._key_status = KeyStatus(
+                KeyState.KEY_OK,
+                self._key_status.spelling,
+                material,
+                length=self._key_status.length,
+                fingerprint=self._key_status.fingerprint,
+            )
+            self.log("container", "info", "key: the first placement verified the key material")
+        return sealed
 
     def _scan_libraries(self) -> None:
         macros = self.macros.scan()
@@ -643,16 +674,21 @@ class Controller:
         self.log("container", "info", f"amiibo library: {len(figures)} .bin indexed across {len(self.figures.series)} series")
 
     def _key_line(self) -> str:
+        """§6.7's one startup line: path, spelling, length, fingerprint, state.
+
+        Never the bytes: the truncated SHA-256 is what answers "which key is
+        loaded" without answering "what is the key".
+        """
         status = self._key_status
         if status.state is KeyState.KEY_ABSENT:
             return f"key: {self.keys.key_file} absent — Amiibo is offered but locked"
-        material = status.material
-        assert material is not None
-        fingerprint = material.data.hex()[:8]
-        return (
-            f"key: {self.keys.key_file} ({status.spelling}, {len(material.data)} B) "
-            f"fp={fingerprint}… state={status.state.value}"
-        )
+        line = f"key: {self.keys.key_file} ({status.spelling}, {status.length} B)"
+        if status.fingerprint is not None:
+            line += f" fp=sha256:{status.fingerprint}…"
+        line += f" state={status.state.value}"
+        if status.detail is not None:
+            line += f" — {status.detail}"
+        return line
 
     def _on_hello(self) -> None:
         assert self._hello is not None
@@ -1004,4 +1040,4 @@ class Controller:
         }
 
 
-__all__ = ["Controller", "ControllerError", "ERROR_SENTENCES", "LogLine", "Sealer", "describe_error"]
+__all__ = ["Controller", "ControllerError", "ERROR_SENTENCES", "LogLine", "SealingSeam", "describe_error"]

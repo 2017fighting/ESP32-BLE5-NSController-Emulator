@@ -5,8 +5,9 @@ replugged board can be pinned by `/dev/serial/by-id` on Linux; on macOS the
 node is forwarded onto that same container path by the compose override
 (ADR-0014). The three mounts are fixed by §10.4 — the key's path especially:
 it is fixed rather than configurable so the locked state can name it truthfully
-(ADR-0012). The `NS2_*` overrides exist for tests and for a host run without
-mounts; the container itself needs none of them.
+(ADR-0012), which is why the key pair is the one path **without** an `NS2_*`
+override. The remaining overrides exist for a host run without mounts; the
+container itself needs none of them.
 """
 
 from __future__ import annotations
@@ -53,8 +54,11 @@ class Settings:
             http_port=int(source.get("NS2_HTTP_PORT") or 8080),
             macro_dir=path("NS2_MACRO_DIR", Path("/library/macros")),
             amiibo_dir=path("NS2_AMIIBO_DIR", Path("/library/amiibo")),
-            key_file=path("NS2_KEY_FILE", Path("/keys/key_retail.bin")),
-            key_dir=path("NS2_KEY_DIR", Path("/keys")),
+            # §6.7: the key's path is fixed, deliberately without an override —
+            # the lock's message has to be able to name one path truthfully
+            # (ADR-0012). Tests and host runs construct `Settings` directly.
+            key_file=Path("/keys/key_retail.bin"),
+            key_dir=Path("/keys"),
             static_dir=path("NS2_STATIC_DIR", DEFAULT_STATIC_DIR),
         )
 

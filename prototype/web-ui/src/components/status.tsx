@@ -101,7 +101,7 @@ export function StopReasonBadge({ reason, error }: { reason: StopReason; error: 
 }
 
 export function KeyStateBadge({ state }: { state: KeyState }) {
-  if (state === 'KEY_READY') return <StatusBadge tone="success" icon={CircleCheck}>Key ready</StatusBadge>
+  if (state === 'KEY_OK') return <StatusBadge tone="success" icon={CircleCheck}>Key ready</StatusBadge>
   if (state === 'KEY_UNVERIFIED') return <StatusBadge tone="warning" icon={Info}>Key unverified</StatusBadge>
   return <StatusBadge tone="danger" icon={CircleX}>Key {state === 'KEY_ABSENT' ? 'missing' : 'invalid'}</StatusBadge>
 }
