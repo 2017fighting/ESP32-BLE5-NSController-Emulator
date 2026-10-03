@@ -31,6 +31,12 @@ class FakeSerial:
         self.args = args
         self.kwargs = kwargs
         self.calls: list[tuple] = []
+        self.port = None
+        self.rts = True
+        self.dtr = True
+
+    def open(self) -> None:
+        self.calls.append(("open", self.port))
 
     def setDTR(self, value: bool) -> None:
         self.calls.append(("DTR", value))
@@ -82,14 +88,20 @@ class PortSequenceTest(unittest.IsolatedAsyncioTestCase):
         )
         return port, fake
 
-    async def test_open_deasserts_dtr_and_rts_after_construction(self):
+    async def test_open_is_deasserted_before_the_port_opens(self):
         port, fake = self.build()
         with mock.patch.object(port_module, "_AsyncioSerialTransport", FakeAsyncioTransport):
             await port.open()
-        self.assertEqual(fake.args, ("/dev/ttyACM0", 921600))
+        # Constructed closed (no port, so pyserial cannot raise RTS/DTR), the
+        # line state applied while still closed, and only then opened on the
+        # real node — §8.3's "deasserted on open" made literal, because RTS is
+        # EN on this board and an asserted open is a reset pulse (#36).
+        self.assertEqual(fake.args, (None, 921600))
         self.assertEqual(fake.kwargs["dsrdtr"], False)
         self.assertEqual(fake.kwargs["rtscts"], False)
-        self.assertEqual(fake.calls, [("DTR", False), ("RTS", False)])
+        self.assertEqual((fake.rts, fake.dtr), (False, False))
+        self.assertEqual(fake.port, "/dev/ttyACM0")
+        self.assertEqual(fake.calls, [("open", "/dev/ttyACM0"), ("DTR", False), ("RTS", False)])
         await port.close()
 
     async def test_close_deasserts_again_before_releasing_the_node(self):

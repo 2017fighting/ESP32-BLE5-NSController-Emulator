@@ -229,13 +229,22 @@ class SerialPortTransport(SerialTransport):
         if self._serial is not None:
             return
         try:
+            # Constructed closed, then opened: RTS is EN on this board, and
+            # pyserial raises RTS/DTR when a port is passed to the constructor —
+            # every attach would pulse a reset, dropping the console link and
+            # the player binding (#36's game bench paid for this). The initial
+            # line state is applied *before* `open()` instead.
             self._serial = self._serial_factory(
-                self._port,
+                None,
                 self._baud,
                 timeout=self._timeout,
                 dsrdtr=False,
                 rtscts=False,
             )
+            self._serial.rts = False
+            self._serial.dtr = False
+            self._serial.port = self._port
+            self._serial.open()
         except (serial.SerialException, OSError) as exc:
             raise _classify(self._port, exc) from exc
         # §8.3: deasserted on open, before any byte is read or written.

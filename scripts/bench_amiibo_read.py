@@ -66,6 +66,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+#: How long a controller change takes to settle before the console takes our
+#: input again (§9.1's re-init; measured the hard way in runs 6/7: L+R landed,
+#: the A 230 ms later never did).
+CLAIM_SETTLE_S = 2.5
+
 PHASE_TIMEOUT = 240.0
 EVIDENCE: dict = {"phases": []}
 
@@ -372,6 +377,47 @@ async def wait_until(predicate, timeout: float, what: str) -> bool:
     return False
 
 
+async def press_sequence(controller, macro_dir: Path, spec: str) -> None:
+    """Run one press sequence as a one-shot macro, then stop (neutral committed).
+
+    The #39 game tool: claiming player 1 (`L+R`) — and whatever the operator's
+    screen asks for next — has to come from this device, and it has to share the
+    one port holder with the placement, so it is the same container stack. The
+    sequence grammar is `scripts/bench_press_buttons.py`'s.
+    """
+    from bench_press_buttons import build_macro  # same dir as this script
+
+    events, length_ms = build_macro(spec)
+    (macro_dir / "press.json").write_text(json.dumps(events))
+    await controller.rescan()
+    await controller.start_macro("press.json")
+    await asyncio.sleep(length_ms / 1000.0 + 0.35)
+    await controller.stop_macro()
+    log(f"  pressed {spec!r} ({length_ms:.0f} ms) — mode={controller.snapshot()['mode']}")
+
+
+async def wait_polling(controller, timeout: float) -> bool:
+    """Wait for `STATUS.console_polling` to leave `IDLE` — the live witness.
+
+    The trace lines only drain at the scan's *edge* (#36's design), so while the
+    console is asking there is nothing in the log to wait on; `console_polling`
+    is the level the 2 Hz UI poll sees, read here straight off the device.
+    """
+    from container.ns2device.model import ConsolePolling
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            status = await controller.device.status()
+            if status.console_polling is not ConsolePolling.IDLE:
+                return True
+        except Exception as failure:  # noqa: BLE001 — a mid-wait drop is a phase fact
+            log(f"  (a status read failed mid-wait: {failure})")
+        await asyncio.sleep(0.5)
+    log(f"TIMEOUT waiting for the console to start polling after {timeout:.0f}s")
+    return False
+
+
 class PlacementRecorder:
     """Wraps the device session's `place` so every sealed image is captured.
 
@@ -411,6 +457,14 @@ async def main() -> int:
                         help="seconds to watch for the read once the tag is placed")
     parser.add_argument("--scans", type=int, default=1,
                         help="scans to record (2 exercises the §6.5 rotation)")
+    parser.add_argument("--claim", default=None,
+                        help="press sequence to claim player 1 before the scan "
+                             '(e.g. "l+r:150") — the game-surface tool (#39)')
+    parser.add_argument("--after-claim", default=None,
+                        help="a second press sequence, sent CLAIM_SETTLE_S after the claim — "
+                             "the console re-initialises its input pipeline on a controller "
+                             "change (§9.1), so anything sent in the first moments is dropped "
+                             '(run 6/7: L+R landed, the A 230 ms later never did)')
     parser.add_argument("--skip-baseline", action="store_true")
     parser.add_argument("--observed", default=None,
                         help="what the console's screen showed (recorded verbatim)")
@@ -560,6 +614,23 @@ async def main() -> int:
         ):
             failures.append(f"S{scan_index}: the console link never came up")
             break
+        if args.claim:
+            # The #39 ordering: claim player 1 first, so the console's read — if
+            # this surface opens one — starts against a reader with no tag in
+            # it (`0x03` on a `0x00` byte), and the placement below is the tag's
+            # arrival, exactly the physical world's sequence.
+            log(f"PHASE S1: claiming player 1 with {args.claim!r} — watch the screen.")
+            await press_sequence(controller, macro_dir, args.claim)
+            if args.after_claim:
+                # The claim is a controller change, and a controller change is a
+                # §9.1 full re-init: the console re-subscribes and drops input
+                # until it settles. The follow-up keys go out only after it has.
+                log(f"PHASE S1: letting the controller change settle ({CLAIM_SETTLE_S:.1f}s).")
+                await asyncio.sleep(CLAIM_SETTLE_S)
+                log(f"PHASE S1: sending {args.after_claim!r}.")
+                await press_sequence(controller, macro_dir, args.after_claim)
+            log("PHASE S1: waiting for the console to start polling (live status).")
+            await wait_polling(controller, 20.0)
         # `console_polling` is a *level* that survives a link drop (§3.2), so it
         # cannot by itself say "the console is asking now". The witness that
         # works is the container's scan count: `place_figure` zeroes its edge

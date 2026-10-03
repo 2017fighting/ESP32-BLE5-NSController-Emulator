@@ -85,6 +85,21 @@ extern "C" {
 #define NFC_TAG_READ_WIRE_BASE 0u
 #endif
 
+/* The #39 game-surface bench's one firmware question (#36's record §4): does
+ * the console's read flow require the report byte to follow the *reader's*
+ * lifecycle — `0x01` while the console polls, `0x02` when the tag is detected
+ * — rather than §4.9's placement-only byte (`0x00`/`0x02`, never `0x01`)?
+ * Both of §12.2 row 4's orderings errored with the placement-only byte: the
+ * console polled (`0x03`), was told a tag existed (`0x05`→`09`+UID), and
+ * aborted with the game's read-error chime before any `0x06`/`0x15`. This knob
+ * makes the byte the polling level's image (IDLE→0x00, POLLING→0x01,
+ * TAG_DETECTED→0x02 — the enum's own values), written from the 10 ms tick so
+ * every polling edge reaches the wire. Default OFF: §4.9's split stands until
+ * this bench says otherwise. */
+#ifndef NFC_TAG_BYTE_FOLLOWS_POLLING
+#define NFC_TAG_BYTE_FOLLOWS_POLLING 0
+#endif
+
 /* §6.1/§6.3: the identity is the seven-byte NFC UID. */
 #define NFC_TAG_UID_SIZE 7u
 

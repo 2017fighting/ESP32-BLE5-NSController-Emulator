@@ -100,6 +100,15 @@ static uint32_t s_drops_at_open;
  * not lock-holding time. */
 static volatile bool s_nfc_flush_pending;
 
+#if NFC_TAG_BYTE_FOLLOWS_POLLING
+/* The bench's next guess after `0x06` arrived and the console still waited
+ * (#39's session): a read-device handshake against a detected tag advances the
+ * byte to `0x03` — "reading" in the documented 0x00–0x07 vocabulary — until the
+ * console restarts or stops polling. Device-side only; the portable state
+ * machine is untouched. */
+static bool s_nfc_reading;
+#endif
+
 /*
  * One lock for the state model, because three tasks reach it: the parser task
  * (verbs), the 100 Hz panic task (§4.5) and the NimBLE host task (console-link
@@ -556,9 +565,16 @@ static void control_pair_unpair_effect(void *ctx)
 static void nfc_state_changed(void *ctx, uint8_t state)
 {
     (void)ctx;
+#if NFC_TAG_BYTE_FOLLOWS_POLLING
+    /* The bench build's single writer is the 10 ms tick (below); the
+     * placement-driven write would fight it with §4.9's value. */
+    (void)state;
+    return;
+#else
     if (g_hid_controller.ops != NULL && g_hid_controller.ops->set_nfc_state != NULL) {
         g_hid_controller.ops->set_nfc_state(&g_hid_controller, state);
     }
+#endif
 }
 
 /* The same write, forced: used where the HID report has just been re-initialised
@@ -567,7 +583,14 @@ static void nfc_state_changed(void *ctx, uint8_t state)
 static void nfc_assert_state_byte(void)
 {
     if (g_hid_controller.ops != NULL && g_hid_controller.ops->set_nfc_state != NULL) {
+#if NFC_TAG_BYTE_FOLLOWS_POLLING
+        g_hid_controller.ops->set_nfc_state(&g_hid_controller,
+                                            s_nfc_reading
+                                                ? 0x03u
+                                                : nfc_tag_polling(&s_control.nfc));
+#else
         g_hid_controller.ops->set_nfc_state(&g_hid_controller, nfc_tag_state(&s_control.nfc));
+#endif
     }
 }
 
@@ -633,6 +656,28 @@ static void control_executor_task(void *arg)
          * report period to sample the absent field. One tick late is an observed
          * deadline, never an extended gap. */
         nfc_tag_tick(&s_control.nfc, now_ms);
+#if NFC_TAG_BYTE_FOLLOWS_POLLING
+        /* The #39 bench knob: the byte is the polling level's image, written on
+         * every change from this tick so the console sees `0x01` the moment it
+         * starts polling and the `0x01→0x02` edge when its own `0x05` reports
+         * the tag. One writer, one clock — and one line per change, because the
+         * byte's live value is otherwise a guess (#39's lesson: the console
+         * waited 3 s after `0x06` and nothing said what it had seen). */
+        {
+            static uint8_t s_nfc_byte_written = 0xffu;
+            uint8_t byte = s_nfc_reading
+                               ? 0x03u
+                               : nfc_tag_polling(&s_control.nfc);
+            if (byte != s_nfc_byte_written) {
+                ESP_LOGI("control", "nfc byte: %02x -> %02x", s_nfc_byte_written, byte);
+                s_nfc_byte_written = byte;
+                if (g_hid_controller.ops != NULL &&
+                    g_hid_controller.ops->set_nfc_state != NULL) {
+                    g_hid_controller.ops->set_nfc_state(&g_hid_controller, byte);
+                }
+            }
+        }
+#endif
         control_ctl_unlock();
         /* #36: the NFC trace's deferred readout, on the tick after the edge that
          * owed it — see `s_nfc_flush_pending`. */
@@ -665,6 +710,9 @@ void control_parser_init(void)
     nfc_tag_init(&s_control.nfc);
     nfc_trace_init(&s_control.nfc_trace);
     s_nfc_flush_pending = false;
+#if NFC_TAG_BYTE_FOLLOWS_POLLING
+    s_nfc_reading = false;
+#endif
     const nfc_tag_events_t nfc_events = {
         .ctx = NULL,
         .state_changed = nfc_state_changed,
@@ -760,6 +808,14 @@ size_t control_nfc_command(uint8_t subcmd, const uint8_t *payload, size_t len, u
      * path entirely, so the ~9 round trips the bench times never pay for their
      * own instrumentation (§6.6, `nfc_trace.h`). */
     nfc_trace_feed(&s_control.nfc_trace, subcmd, payload, len, out, n, control_now_ms());
+#if NFC_TAG_BYTE_FOLLOWS_POLLING
+    if (subcmd == NFC_CMD_READ_DEVICE &&
+        nfc_tag_polling(&s_control.nfc) == NFC_STATE_TAG_DETECTED) {
+        s_nfc_reading = true;
+    } else if (subcmd == NFC_CMD_START_POLLING || subcmd == NFC_CMD_STOP_POLLING) {
+        s_nfc_reading = false;
+    }
+#endif
     if (subcmd == NFC_CMD_STOP_POLLING) {
         s_nfc_flush_pending = true;
     }

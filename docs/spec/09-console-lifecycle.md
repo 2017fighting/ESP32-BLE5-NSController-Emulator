@@ -121,6 +121,11 @@ action it already takes on `SCAN_ENDED` (§6.5), so this is a policy, not new ma
 > keep-and-rotate, or hold the rotation until the console asks) is a scoping question for a
 > policy ticket, not a silent edit here. Until it is decided: **a placement must not outlive its
 > scan window on the wire** — bench scripts unplace at the window's edge for exactly this reason.
+> A second, finer observation (#39's experiment): the rotation's tag-absent gap also lands
+> **mid-retry inside a console read** — the trace caught `0x05 status=00` where `09` was the
+> story, because the console re-asked during the gap the rotation had just opened
+> (`amiibo-game-surface-bench.md` §2). The gap's 20 ms is right for §6.5's purpose and wrong as
+> an answer to a console that is already asking; the same policy fork above owns that too.
 
 ### Console never connected → **allow `START` and `PLACE_AMIIBO`, warn**
 
