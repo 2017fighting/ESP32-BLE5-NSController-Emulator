@@ -15,6 +15,7 @@ import asyncio
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -23,8 +24,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import support  # noqa: E402
 
 from container.ns2container import ControllerError, Settings, create_controller  # noqa: E402
-from container.ns2device import ConsoleLink, Event, EventKind, Hello, StubDevice  # noqa: E402
-from container.ns2sealing import KeyMaterial, SealedTag, identity_of  # noqa: E402
+from container.ns2device import (  # noqa: E402
+    ConsoleLink,
+    Event,
+    EventKind,
+    Hello,
+    StubDevice,
+)
+from container.ns2sealing import (  # noqa: E402
+    KeyMaterial,
+    SealedTag,
+    SealingUnavailable,
+    bcc0_for,
+    identity_of,
+)
 
 TAG = bytes.fromhex("0411fe63ca526c81") + bytes(532)
 
@@ -32,6 +45,54 @@ TAG = bytes.fromhex("0411fe63ca526c81") + bytes(532)
 def fake_sealer(image: bytes, key: KeyMaterial) -> SealedTag:
     """A test double, not a fallback: it copies the source image's identity."""
     return SealedTag(image=image, identity=identity_of(image))
+
+
+class RotatingSealer:
+    """A faithful double of the #32 seam: every seal mints a fresh identity.
+
+    Rotation is only observable if the sealer never hands back the identity it
+    was given (§6.1: one identity per placement), so the double mints
+    `0x04` + a counter exactly like `mint_identity` mints `0x04` + CSPRNG.
+    """
+
+    def __init__(self) -> None:
+        self.mints = 0
+
+    def __call__(self, image: bytes, key: KeyMaterial) -> SealedTag:
+        self.mints += 1
+        identity = bytes([0x04]) + self.mints.to_bytes(6, "big")
+        block = identity[:3] + bytes([bcc0_for(identity)]) + identity[3:]
+        return SealedTag(image=block + image[8:], identity=identity)
+
+
+class FlakySealer:
+    """Seals once, then fails — a key that goes bad between placements."""
+
+    def __init__(self) -> None:
+        self.inner = RotatingSealer()
+        self.failed = False
+
+    def __call__(self, image: bytes, key: KeyMaterial) -> SealedTag:
+        if self.failed:
+            raise SealingUnavailable("the round trip broke between placements")
+        return self.inner(image, key)
+
+
+class CountingDevice(StubDevice):
+    """Counts the verbs chapter 9's policy is allowed to send."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.stop_calls = 0
+        self.start_calls = 0
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+        await super().stop()
+
+    async def start(self) -> None:
+        self.start_calls += 1
+        await super().start()
 
 
 class SlowStubDevice(StubDevice):
@@ -69,15 +130,23 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
             static_dir=root / "dist",
         )
 
-    async def start_controller(self, *, device=None, with_key: bool = True):
+    async def start_controller(self, *, device=None, with_key: bool = True, sealer=fake_sealer):
         settings = self.build_settings(with_key=with_key)
         self.controller = create_controller(
             settings,
             device=device if device is not None else StubDevice(),
-            sealer=fake_sealer,
+            sealer=sealer,
         )
         await self.controller.start()
         return self.controller
+
+    async def wait_for(self, predicate, timeout: float = 3.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            await asyncio.sleep(0.01)
+        self.fail("condition not reached within timeout")
 
     async def asyncTearDown(self):
         if getattr(self, "controller", None) is not None:
@@ -188,6 +257,171 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
         snapshot = controller.snapshot()
         self.assertEqual(snapshot["console"]["lastDropReason"], "531 (BLE_HS_ERR_HCI_BASE + 0x13)")
         self.assertEqual(snapshot["stopReason"], "CONSOLE_LOST")
+
+    async def test_a_console_drop_mid_macro_stops_the_run_once(self):
+        # §9.3: the container sends STOP and surfaces `Stopped: console
+        # disconnected`. The device sees a plain CONTAINER_STOP — CONSOLE_LOST
+        # is container-side only and never becomes a wire value.
+        device = CountingDevice()
+        controller = await self.start_controller(device=device)
+        await controller.start_macro("correction.json")
+        device.set_console_link(ConsoleLink.ADVERTISING, reason=531)
+        await self.wait_for(lambda: controller.snapshot()["stopReason"] == "CONSOLE_LOST")
+        snapshot = controller.snapshot()
+        self.assertEqual(snapshot["mode"], "IDLE")
+        self.assertEqual(device.stop_calls, 1)
+        # The wire carries a plain CONTAINER_STOP — CONSOLE_LOST never reaches it.
+        self.assertIs((await device.status()).last_stop_reason.name, "CONTAINER_STOP")
+        # §4.3: a stop retains the plan — the run is one START away.
+        self.assertIsNotNone(snapshot["plan"])
+        self.assertIsNone(snapshot["lastError"])
+
+    async def test_no_auto_restart_after_the_console_reconnects(self):
+        # §9.1: the console re-initialises itself on wake, so the container has
+        # nothing to do but wait for the human — exactly as after a BOOT_LOCAL.
+        device = CountingDevice()
+        controller = await self.start_controller(device=device)
+        await controller.start_macro("correction.json")
+        device.set_console_link(ConsoleLink.ADVERTISING, reason=531)
+        await self.wait_for(lambda: controller.snapshot()["stopReason"] == "CONSOLE_LOST")
+        starts_before_reconnect = device.start_calls
+        device.set_console_link(ConsoleLink.CONNECTED)
+        device.console_resubscribes()
+        await asyncio.sleep(0.2)
+        snapshot = controller.snapshot()
+        self.assertEqual(snapshot["mode"], "IDLE")
+        self.assertEqual(device.start_calls, starts_before_reconnect)
+        # The story of why the run ended survives the reconnect.
+        self.assertEqual(snapshot["stopReason"], "CONSOLE_LOST")
+        self.assertEqual(snapshot["console"]["link"], "CONNECTED")
+
+    async def test_a_manual_stop_after_a_drop_reads_container_stop(self):
+        device = CountingDevice()
+        controller = await self.start_controller(device=device)
+        await controller.start_macro("correction.json")
+        device.set_console_link(ConsoleLink.ADVERTISING, reason=531)
+        await self.wait_for(lambda: controller.snapshot()["stopReason"] == "CONSOLE_LOST")
+        device.set_console_link(ConsoleLink.CONNECTED)
+        await controller.start_macro("correction.json")
+        # The stop-reason surface is read where the UI renders it — in IDLE
+        # after the run ends — not mid-run (§3.4: a START does not clear it).
+        await controller.stop_macro()
+        self.assertEqual(controller.snapshot()["stopReason"], "CONTAINER_STOP")
+
+    async def test_a_console_drop_keeps_a_placement_and_rotates_on_reconnect(self):
+        # §9.3: a placed tag nobody reads is harmless, but the console must not
+        # re-scan an identity it already saw — rotate before its first scan.
+        sealer = RotatingSealer()
+        controller = await self.start_controller(sealer=sealer)
+        await controller.place_figure("Zelda/Link.bin")
+        before = controller.snapshot()["placement"]
+        device = controller.device
+        device.set_console_link(ConsoleLink.ADVERTISING, reason=531)
+        await self.wait_for(lambda: controller.snapshot()["console"]["lastDropReason"] is not None)
+        # The placement survived the drop untouched.
+        kept = controller.snapshot()["placement"]
+        self.assertEqual(kept["identity"], before["identity"])
+        self.assertEqual(controller.snapshot()["mode"], "AMIIBO")
+        device.set_console_link(ConsoleLink.CONNECTED)
+        await self.wait_for(
+            lambda: (controller.snapshot()["placement"] or {}).get("identity") != before["identity"]
+        )
+        rotated = controller.snapshot()["placement"]
+        self.assertEqual(rotated["index"], 2)
+        self.assertEqual(rotated["scans"], 0)
+        # §9.1: the wake is a reconnect *and* a re-subscribe — one rotation, not two.
+        device.console_resubscribes()
+        await asyncio.sleep(0.2)
+        self.assertEqual(controller.snapshot()["placement"]["index"], 2)
+        self.assertEqual(sealer.mints, 2)
+
+    async def test_a_missed_connected_edge_still_rotates_on_resubscribed(self):
+        # The container may attach after the CONNECTED edge; the re-subscribe
+        # is the other edge §9.1 promises, and the rotation is idempotent per
+        # drop either way.
+        sealer = RotatingSealer()
+        controller = await self.start_controller(sealer=sealer)
+        await controller.place_figure("Zelda/Link.bin")
+        before = controller.snapshot()["placement"]["identity"]
+        controller.device.set_console_link(ConsoleLink.ADVERTISING, reason=531)
+        await self.wait_for(lambda: controller.snapshot()["console"]["lastDropReason"] is not None)
+        controller.device.console_resubscribes()
+        await self.wait_for(
+            lambda: (controller.snapshot()["placement"] or {}).get("identity") != before
+        )
+
+    async def test_a_scan_ended_rotates_the_placement(self):
+        # §6.5/§3.5: SCAN_ENDED mints the next identity and pushes it, so a
+        # virgin tag is staged before the next scan — the same action the
+        # reconnect policy takes, not new machinery.
+        sealer = RotatingSealer()
+        controller = await self.start_controller(sealer=sealer)
+        await controller.place_figure("Zelda/Link.bin")
+        before = controller.snapshot()["placement"]["identity"]
+        controller.device.console_ends_scan()
+        await self.wait_for(
+            lambda: (controller.snapshot()["placement"] or {}).get("identity") != before
+        )
+        rotated = controller.snapshot()["placement"]
+        self.assertEqual(rotated["index"], 2)
+        self.assertEqual(controller.snapshot()["mode"], "AMIIBO")
+
+    async def test_a_rotation_failure_is_a_warning_not_a_crash(self):
+        sealer = FlakySealer()
+        controller = await self.start_controller(sealer=sealer)
+        await controller.place_figure("Zelda/Link.bin")
+        before = controller.snapshot()["placement"]["identity"]
+        sealer.failed = True
+        controller.device.set_console_link(ConsoleLink.ADVERTISING, reason=531)
+        await self.wait_for(lambda: controller.snapshot()["console"]["lastDropReason"] is not None)
+        controller.device.set_console_link(ConsoleLink.CONNECTED)
+        await asyncio.sleep(0.2)
+        # The placement is kept as placed; the failure is on the Logs screen.
+        self.assertEqual(controller.snapshot()["placement"]["identity"], before)
+        self.assertTrue(any("rotat" in line.message.lower() for line in controller._logs))
+        # And the event loop is still alive: a later edge still reaches the device.
+        sealer.failed = False
+        controller.device.console_resubscribes()
+        await self.wait_for(
+            lambda: (controller.snapshot()["placement"] or {}).get("identity") != before
+        )
+
+    async def test_a_console_drop_while_idle_sends_nothing(self):
+        device = CountingDevice()
+        controller = await self.start_controller(device=device)
+        device.set_console_link(ConsoleLink.ADVERTISING, reason=531)
+        await self.wait_for(lambda: controller.snapshot()["console"]["lastDropReason"] is not None)
+        await asyncio.sleep(0.1)
+        self.assertEqual(device.stop_calls, 0)
+        snapshot = controller.snapshot()
+        self.assertEqual(snapshot["mode"], "IDLE")
+        self.assertEqual(snapshot["stopReason"], "NONE")
+
+    async def test_a_reboot_mid_macro_ends_the_run_without_inventing_a_reason(self):
+        # §9.2: a reboot during a macro silently ends the run — mode=IDLE with
+        # last_stop_reason=NONE. Normal operation, not an error path.
+        device = StubDevice(boot_id=1)
+        controller = await self.start_controller(device=device)
+        await controller.start_macro("correction.json")
+        device.reboot(boot_id=2)
+        await self.wait_for(lambda: controller.snapshot()["recovery"] == "NEW_POWER")
+        snapshot = controller.snapshot()
+        self.assertEqual(snapshot["mode"], "IDLE")
+        self.assertEqual(snapshot["stopReason"], "NONE")
+        self.assertIsNone(snapshot["lastError"])
+        self.assertIsNone(snapshot["plan"])
+
+    async def test_starting_with_no_console_is_allowed(self):
+        # §9.3: refusing would be dishonest about a dependency that does not
+        # exist — the device does not need the console to run a macro.
+        device = StubDevice(console_link=ConsoleLink.ADVERTISING)
+        controller = await self.start_controller(device=device)
+        self.assertEqual(controller.snapshot()["console"]["link"], "ADVERTISING")
+        await controller.start_macro("correction.json")
+        self.assertEqual(controller.snapshot()["mode"], "MACRO")
+        await controller.stop_macro()
+        await controller.place_figure("Zelda/Link.bin")
+        self.assertEqual(controller.snapshot()["mode"], "AMIIBO")
 
     async def test_an_event_is_a_prompt_to_re_read_status(self):
         controller = await self.start_controller()

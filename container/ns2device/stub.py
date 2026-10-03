@@ -141,6 +141,18 @@ class StubDevice:
         which = LinkEdge.CONNECTED if link is ConsoleLink.CONNECTED else LinkEdge.DISCONNECTED
         self._emit(EventKind.CONSOLE_LINK, struct.pack("<BH", int(which), reason))
 
+    def console_resubscribes(self) -> None:
+        """§9.1: on wake the console re-subscribes `0x000e` itself — a fresh
+        CCCD write or a bond restore — so the edge is `RESUBSCRIBED`, not a
+        second `CONNECTED`. The subscribe handler is where `gap.c` emits it.
+        """
+        self._console_link = ConsoleLink.CONNECTED
+        self._emit(EventKind.CONSOLE_LINK, struct.pack("<BH", int(LinkEdge.RESUBSCRIBED), 0))
+
+    def console_ends_scan(self) -> None:
+        """§3.3/§6.5: the console stopped polling the placed tag."""
+        self._emit(EventKind.SCAN_ENDED)
+
     def reboot(self, *, boot_id: int | None = None) -> None:
         """Simulate a power cycle: new `boot_id`, plan and tag cleared (ADR-0004)."""
         self._boot_at = self._now()
@@ -251,7 +263,9 @@ class StubDevice:
         self._clear_error()
         self._mode = Mode.MACRO
         self._started_at = self._now()
-        self._last_stop_reason = StopReason.NONE
+        # `last_stop_reason` is written by a stop and by nothing else (§3.4:
+        # NONE means "has booted and has not yet stopped"), so a START does not
+        # clear it — the firmware keeps it across starts and so does the stub.
         self._emit(EventKind.MODE_CHANGED, bytes([int(Mode.MACRO)]))
 
     async def stop(self) -> None:
@@ -279,7 +293,6 @@ class StubDevice:
         self._tag_identity = identity_of(tag)
         self._placed_at = self._now()
         self._mode = Mode.AMIIBO
-        self._last_stop_reason = StopReason.NONE
         if not replaced:
             self._emit(EventKind.MODE_CHANGED, bytes([int(Mode.AMIIBO)]))
         self._emit(EventKind.TAG_PLACED, self._tag_identity)

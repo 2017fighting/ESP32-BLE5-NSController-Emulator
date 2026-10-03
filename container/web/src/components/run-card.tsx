@@ -8,7 +8,7 @@ import type { PendingMode } from '@/components/mode-selector'
 import { StopReasonBadge } from '@/components/status'
 import { findFigure, findMacro, formatBytes, formatLoop, type StopReason, type UiState } from '@/lib/model'
 import { useStore } from '@/app/store'
-import { CircleSlash, Play, ScanLine, Square, Upload, X } from 'lucide-react'
+import { CircleSlash, Info, Play, ScanLine, Square, Upload, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useMemo, type ReactNode } from 'react'
 
@@ -68,6 +68,20 @@ function stopReasonCopy(reason: StopReason, error: boolean): string | null {
   return null
 }
 
+/** §9.3: a macro is allowed to start with no console, and the one consequence
+ *  worth stating is that nothing visible happens until it connects. */
+function ConsoleAbsentNote() {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-info/30 bg-info/10 p-3 text-sm text-info dark:border-info/25 dark:bg-info/15">
+      <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
+      <p>
+        The console is not connected. The board replays the plan regardless — it watches neither link — so nothing will
+        happen on the console until it reconnects.
+      </p>
+    </div>
+  )
+}
+
 /** The single dominant action for the Control view (Von Restorff + Nielsen H8). */
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -125,6 +139,7 @@ export function RunCard({ pending }: { pending: PendingMode }) {
               <p className="text-sm font-medium">{macro?.name ?? 'Unknown macro'}</p>
               <p className="font-mono text-xs text-muted-foreground">plan {state.plan.hash}</p>
             </div>
+            {state.console.link !== 'CONNECTED' ? <ConsoleAbsentNote /> : null}
             <div className="flex items-end gap-2">
               <span className="font-mono text-3xl font-semibold tabular-nums">{state.plan.loopCount}</span>
               <span className="pb-1 text-xs text-muted-foreground">loops completed</span>

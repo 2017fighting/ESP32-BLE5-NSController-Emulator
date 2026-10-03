@@ -154,6 +154,8 @@ function PairingCard() {
               <li>It cannot start pairing — you pair from the console’s controller menu.</li>
               <li>It can request that the board forget its bond; the console keeps its own copy.</li>
               <li>It reports the link and the bond; it never guesses them.</li>
+              <li>If the console drops mid-macro, the app stops the run and will not restart it — the console re-initialises itself on reconnect.</li>
+              <li>A placed amiibo survives a drop and is rotated to a fresh identity before the console’s next scan.</li>
             </ul>
           </div>
         </div>

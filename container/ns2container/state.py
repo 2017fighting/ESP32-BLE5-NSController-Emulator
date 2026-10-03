@@ -3,9 +3,10 @@
 This is the module the web seam calls. It is deliberately *above* `DeviceApi`:
 the web seam never touches the port, and this is the one place device truth is
 converted into the state the browser renders (§8.2's "the browser never talks
-to the device"). Issue #30 swaps the `StubDevice` for the real session without
-moving any of this; issue #31 adds chapter 9's console policy into `_on_event`;
-issue #32 replaces the injected `sealer`.
+to the device"). Issue #30 swapped the `StubDevice` for the real session without
+moving any of this; chapter 9's console-lifecycle policy lives in
+`_on_console_link`/`_on_scan_ended` (#31); issue #32 replaces the injected
+`sealer`.
 
 Two rules from §8.10 are structural here:
 
@@ -34,6 +35,7 @@ from ..ns2device import (
     EventKind,
     Features,
     Hello,
+    LinkEdge,
     Mode,
     PlanHashMismatch,
     PlanState,
@@ -154,6 +156,11 @@ class Controller:
         self._console_lost = False
         self._last_drop_reason: str | None = None
         self._recovery = "SAME_POWER"
+        # §9.3: a drop was observed while a tag was placed — the next up-edge
+        # rotates the placement so the console cannot re-scan an identity it
+        # already saw. Not "rotate on every connect": a first connect scans a
+        # virgin placement and needs nothing.
+        self._rotate_pending = False
 
         self._logs: deque[LogLine] = deque(maxlen=settings.log_capacity)
         self._log_seq = 0
@@ -314,6 +321,9 @@ class Controller:
                 f"{self._hello.plan_capacity_bytes}-byte capacity.",
             )
         self._cancel_requested = False
+        # A new run starts with a fresh stop-reason surface: the story of the
+        # previous run's console drop belongs to that run (§9.3).
+        self._console_lost = False
         self._uploading = {"macroId": entry.id, "offset": 0, "total": entry.bytes}
         self._publish()
         self.log("container", "info", f"plan: uploading {entry.source} → {entry.bytes} B")
@@ -382,24 +392,26 @@ class Controller:
         if image is None:
             raise ControllerError("FIGURE_UNREADABLE", f"{entry.source} is missing or shorter than 540 bytes.")
         self._require_up()
-        try:
-            sealed = self._sealer(image, self._key_status.material)  # type: ignore[arg-type]
-        except SealingUnavailable as unavailable:
-            raise ControllerError("SEALING_UNAVAILABLE", str(unavailable)) from None
-        except KeyInvalid:
-            # §6.7: a failure at the first placement sets KEY_INVALID and refuses
-            # the placement. It never falls back to replaying the dump unchanged.
-            self._key_status = KeyStatus(KeyState.KEY_INVALID, self._key_status.spelling, None)
+        sealed = self._seal_figure(image)
+        if sealed is None:
+            if self._key_status.state is KeyState.KEY_INVALID:
+                raise ControllerError(
+                    "KEY_INVALID",
+                    "The mounted key failed the unpack round trip; it is not a usable retail key.",
+                )
             raise ControllerError(
-                "KEY_INVALID",
-                "The mounted key failed the unpack round trip; it is not a usable retail key.",
-            ) from None
+                "SEALING_UNAVAILABLE",
+                "Sealing is not available in this build; the placement is refused locally "
+                "rather than replaying a stored tag unchanged.",
+            )
         await self._device_call("place", self.device.place(sealed.image))
         self._placed_figure_id = figure_id
         self._placement_index += 1
         self._placed_at = time.monotonic()
         self._scans = 0
         self._last_polling = 0
+        # A fresh placement is virgin — it owes the console no rotation.
+        self._rotate_pending = False
         self.log(
             "container",
             "info",
@@ -413,6 +425,7 @@ class Controller:
         self._placed_figure_id = None
         self._placed_at = None
         self._last_polling = 0
+        self._rotate_pending = False
         self.log("container", "info", "amiibo: unplaced")
         await self.refresh()
 
@@ -487,6 +500,11 @@ class Controller:
         self._committed_bytes = 0
         self._placed_figure_id = None
         self._placed_at = None
+        self._rotate_pending = False
+        # §9.2: a reboot during a macro silently ends the run and the reason is
+        # not knowable from the device — `NONE`, never an invented one. The
+        # story of a pre-reboot console drop does not survive the reset either.
+        self._console_lost = False
 
     async def _device_call(self, label: str, awaitable):
         """Await one device call, turning a dead link into a typed refusal.
@@ -574,6 +592,22 @@ class Controller:
                 "unfixed-info.bin + locked-secret.bin concatenated in that order.",
             )
 
+    def _seal_figure(self, image: bytes) -> SealedTag | None:
+        """One sealing attempt — the shared core of placing and rotating.
+
+        Returns `None` when sealing cannot happen, having already set
+        `KEY_INVALID` if that is what the failure proved (§6.7: a failure at a
+        placement sets the state; it never falls back to replaying the stored
+        tag unchanged). Callers decide how the failure is surfaced.
+        """
+        try:
+            return self._sealer(image, self._key_status.material)  # type: ignore[arg-type]
+        except SealingUnavailable:
+            return None
+        except KeyInvalid:
+            self._key_status = KeyStatus(KeyState.KEY_INVALID, self._key_status.spelling, None)
+            return None
+
     def _scan_libraries(self) -> None:
         macros = self.macros.scan()
         figures = self.figures.scan()
@@ -622,13 +656,12 @@ class Controller:
         status = self._status
         assert status is not None
         # Console scan counting is the container's: the wire carries
-        # `console_polling`, not a scan count (§3.2).
+        # `console_polling`, not a scan count (§3.2). The *story* of a scan
+        # ending comes from the SCAN_ENDED event (§3.3); the level here only
+        # counts, so the Logs screen does not say it twice.
         polling = int(status.console_polling)
-        if status.tag_state is TagState.PLACED and polling != self._last_polling:
-            if polling > 0 and self._last_polling == 0:
-                self._scans += 1
-            if polling == 0 and self._last_polling > 0:
-                self.log("container", "info", "amiibo: the console stopped polling the placed tag")
+        if status.tag_state is TagState.PLACED and polling > 0 and self._last_polling == 0:
+            self._scans += 1
         self._last_polling = polling
 
     def _stop_reason(self, status: Status) -> str:
@@ -711,7 +744,6 @@ class Controller:
             EventKind.PLAN_DISCARDED,
             EventKind.TAG_PLACED,
             EventKind.TAG_UNPLACED,
-            EventKind.CONSOLE_LINK,
         }
         try:
             async for event in self.device.events():
@@ -722,6 +754,11 @@ class Controller:
                     # HELLO, then the boot_id branch decides what survives.
                     await self._attempt_connect()
                     self._publish()
+                elif event.kind is EventKind.CONSOLE_LINK:
+                    # §3.5: chapter 9's policy, applied here and nowhere else.
+                    await self._on_console_link(event)
+                elif event.kind is EventKind.SCAN_ENDED:
+                    await self._on_scan_ended()
                 elif event.kind in prompts:
                     await self.refresh()
                 else:
@@ -752,29 +789,160 @@ class Controller:
         elif event.kind is EventKind.PLAN_DISCARDED:
             self._committed_macro_id = None
             self._committed_bytes = 0
+            self._placed_figure_id = None
+            self._rotate_pending = False
             self.log("container", "warn", "plan: discarded by a long press at the board")
         elif event.kind is EventKind.TAG_PLACED:
             self.log("frame", "debug", "EVT  TAG_PLACED")
         elif event.kind is EventKind.TAG_UNPLACED:
             self.log("frame", "debug", "EVT  TAG_UNPLACED")
-        elif event.kind is EventKind.SCAN_ENDED:
-            self.log("container", "info", "amiibo: the console stopped polling the placed tag")
         elif event.kind is EventKind.ERROR_RAISED:
             error = event.error
             if error is not None:
                 self.log("device", "error", f"the board raised {error.code.name}")
-        elif event.kind is EventKind.CONSOLE_LINK:
-            edge = event.link_edge
-            if edge is not None:
-                which, reason = edge
-                if which.name == "DISCONNECTED":
-                    self._last_drop_reason = self._describe_drop(reason)
-                    self._console_lost = True
-                    self.log("container", "warn", f"console link: disconnected (reason={reason})")
-                else:
-                    self._last_drop_reason = None
-                    self._console_lost = False
-                    self.log("container", "info", f"console link: {which.name.lower()}")
+
+    # ── chapter 9: the console-lifecycle policy (§9.3, §8.3) ───────────
+
+    async def _on_console_link(self, event: Event) -> None:
+        """Apply chapter 9's policy to one `CONSOLE_LINK` edge, from STATUS alone.
+
+        The device watches neither link (ADR-0008), so every decision here is
+        the container's, and the device never learns *why* it was stopped:
+        `CONSOLE_LOST` is a container-side reading, never a wire value.
+        """
+        edge = event.link_edge
+        if edge is None:
+            self.log("frame", "debug", "EVT  CONSOLE_LINK     <short payload>")
+            self._publish()
+            return
+        which, reason = edge
+        if which is LinkEdge.DISCONNECTED:
+            self._last_drop_reason = self._describe_drop(reason)
+            self.log("container", "warn", f"console link: disconnected (reason={self._last_drop_reason})")
+            # §3.1: the action is decided from re-read truth, not from the event.
+            await self.refresh()
+            status = self._status
+            if status is not None and status.mode is Mode.MACRO:
+                # §9.3: a pass resuming mid-press into a freshly-connected
+                # console is an unverified risk (G-5) not worth one verb.
+                # `STOP` is idempotent in IDLE (§4.4), so a duplicate edge or a
+                # run that already ended sends nothing further.
+                try:
+                    await self._device_call("stop", self.device.stop())
+                except (ControllerError, CommandError) as failure:
+                    self.log(
+                        "container",
+                        "error",
+                        f"console: the stop did not reach the device — {failure}; "
+                        "the run keeps replaying until it does",
+                    )
+                    self._publish()
+                    return
+                self._console_lost = True
+                self.log(
+                    "container",
+                    "warn",
+                    "console: macro stopped — the console re-initialises itself on "
+                    "reconnect, so restarting is yours to do",
+                )
+                # Read the mode back rather than publishing the pre-stop one:
+                # no optimistic mode change, in either direction (§8.2).
+                await self.refresh()
+            elif status is not None and status.tag_state is TagState.PLACED:
+                # §9.3/§6.5: the placement is kept — a tag nobody is reading is
+                # harmless — and rotated before the console's next scan.
+                self._rotate_pending = True
+                self.log(
+                    "container",
+                    "info",
+                    "amiibo: placement kept across the drop; it will be rotated "
+                    "before the console's next scan",
+                )
+            self._publish()
+            return
+        # An up-edge: CONNECTED, or the RESUBSCRIBED the console issues itself
+        # on wake (§9.1). The console re-runs its whole init and needs nothing
+        # re-sent, so the only policy here is the rotation.
+        self.log("container", "info", f"console link: {which.name.lower()}")
+        await self.refresh()
+        if self._rotate_pending:
+            await self._rotate_placement(trigger="the console reconnected")
+        self._publish()
+
+    async def _on_scan_ended(self) -> None:
+        """§6.5/§3.5: one placement per scan — mint the next identity now.
+
+        The same action the reconnect policy takes (§9.3), not new machinery:
+        the rotation is one atomic `PLACE_AMIIBO` whose tag-absent gap the device
+        emits itself.
+        """
+        self.log("container", "info", "amiibo: the console finished a scan")
+        # §3.1: the event is the prompt; the rotation is decided from re-read
+        # truth (the tag may already be gone by the time this runs).
+        await self.refresh()
+        await self._rotate_placement(trigger="the scan ended")
+
+    async def _rotate_placement(self, *, trigger: str) -> None:
+        """Re-seal the placed figure under a fresh identity and re-place it.
+
+        A failure is a warning, never a crash: the event loop must survive it,
+        and the placement stays as it is (unplacing would exit the mode for no
+        reason, §6.5). A failed rotation is re-armed — deliberately, and not as
+        a slow-reply retransmit (§8.9 bans those): the freshness requirement is
+        still unmet, and the next up-edge or scan is a new policy trigger, the
+        same edge-driven refresh §6.5 defines.
+        """
+        status = self._status
+        figure_id = self._placed_figure_id
+        if (
+            figure_id is None
+            or status is None
+            or status.tag_state is not TagState.PLACED
+            or self._control_link != "UP"
+        ):
+            # Nothing placed to rotate — a panic stop, a reboot or a manual
+            # unplace got there first, and restarting any of those is §8.10's
+            # line, not this policy's.
+            self._rotate_pending = False
+            return
+        image = self.figures.read_image(figure_id)
+        if image is None:
+            self._rotate_pending = False
+            self.log(
+                "container",
+                "warn",
+                f"amiibo: could not rotate after {trigger} — {figure_id} is no longer readable",
+            )
+            return
+        sealed = self._seal_figure(image)
+        if sealed is None:
+            self.log(
+                "container",
+                "warn",
+                f"amiibo: could not rotate after {trigger} — sealing failed; the console "
+                "may re-scan the identity it already saw",
+            )
+            return
+        try:
+            await self._device_call("place", self.device.place(sealed.image))
+        except (ControllerError, CommandError) as failure:
+            self.log(
+                "container",
+                "warn",
+                f"amiibo: the rotation did not reach the device — {failure}",
+            )
+            return
+        self._rotate_pending = False
+        self._placement_index += 1
+        self._placed_at = time.monotonic()
+        self._scans = 0
+        self.log(
+            "container",
+            "info",
+            f"amiibo: rotated to {sealed.identity.hex()} (placement #{self._placement_index}) "
+            f"after {trigger} — the console will not re-scan an identity it saw",
+        )
+        await self.refresh()
 
     @staticmethod
     def _describe_drop(reason: int) -> str:
