@@ -78,12 +78,14 @@ discipline ADR-0006 implies: the framing knows about the noise, the transport do
    device is a byte server here: it slices a 540-byte RAM buffer and does no crypto
    (ADR-0011). Rename the report field `unknown_0x0c` → `nfc_state`.
 7. **`CONFIG`**: `report_interval_ms` and `led`, volatile, applied at the boundary §2.9 fixes.
-8. **The `0x01/0x0C` response asymmetry, investigated rather than inherited.**
-   `main/src/ns2_codec.c` rewrites response byte 1 from `0x91` to `0x01` for this subcommand,
-   while `0x02/0x04` (the flash read the console uses for calibration) also sets `0x91` and is
-   **not** rewritten. Whether that asymmetry is deliberate is unknown, and it touches both the
-   NFC probe and calibration. It is listed here so the NFC work in step 6 does not touch the
-   byte without deciding, and it is **G-14** in §12.3.
+8. **The Direction byte is already handled — no decision is left here.** `cmd_process()` flips
+   response byte 1 from `0x91` to `0x01` centrally (`main/src/ns2_codec.c:656-658`), for
+   **every** command it dispatches, so the NFC probe `0x01/0x0C` and the calibration read
+   `0x02/0x04` are rewritten identically and the console accepts both — 140/140 calibration
+   reads on the bench. There is no asymmetry to preserve or design around, and the NFC
+   subcommands of step 6 inherit the correct byte by routing through the same path. What was
+   recorded as **G-14** was a misreading of the handler-versus-payload split and is retired
+   (§12.3, `ns2-0x01-0c-asymmetry.md` §3).
 
 Nothing in this list needs a new transport, a new radio, or a filesystem.
 

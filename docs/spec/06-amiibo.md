@@ -59,8 +59,9 @@ BCC0 = 0x88 ^ UID[0] ^ UID[1] ^ UID[2]     (byte 3)
 BCC1 = UID[3] ^ UID[4] ^ UID[5] ^ UID[6]   (byte 8)
 ```
 
-Verified against a library tag: `Samus.nfc` opens `04 11 fe 63 ca 52 6c 81`,
-so `UID = 04 11 FE 63 CA 52 6C`, `BCC0 = 0x88^0x04^0x11^0xFE = 0x63` at offset 3, and
+Verified against a library tag: `Samus.nfc` opens `04 11 fe 63 ca 52 6c 81` — `UID[0..2] =
+04 11 FE`, then `BCC0` at byte 3, then `UID[3..6] = CA 52 6C 81` — so the seven-byte UID is
+`04 11 FE CA 52 6C 81`, `BCC0 = 0x88^0x04^0x11^0xFE = 0x63` at offset 3, and
 `BCC1 = 0xCA^0x52^0x6C^0x81 = 0x75` at offset 8.
 
 **Identities are never recorded and never reused deliberately.** The space is 2^48, so reuse
@@ -74,21 +75,33 @@ cares about, **in tag-image coordinates**:
 | Pages | Offset | Contents |
 | --- | --- | --- |
 | 0–1 | `0x000`–`0x007` | `UID[0..2]`, `BCC0` (byte 3), `UID[3..6]` — **the 8-byte KDF seed region** |
-| 2 | `0x008` | `BCC1`, internal byte `0x48`, static lock bits `E0 0F`, capability container `F1 10 FF EE` (pages 2–3) |
-| 4–12 | `0x010`–`0x033` | amiibo header: write counter, character ID, amiibo ID |
-| 13–84 | `0x034`–`0x153` | data section 1, AES-128-CTR ciphertext |
-| 85–92 | `0x154`–`0x173` | **data HMAC**, 32 bytes |
-| 93–116 | `0x174`–`0x1D3` | **tag HMAC**, 32 bytes |
-| 117–129 | `0x1D4`–`0x207` | data section 2 / application save area |
+| 2–3 | `0x008`–`0x00F` | `BCC1` (byte 8), internal byte `0x48`, static lock bits `E0 0F`, capability container `F1 10 FF EE` |
+| 4 | `0x010`–`0x013` | amiibo header / write-counter prefix — **unencrypted** |
+| 5–12 | `0x014`–`0x033` | AES-128-CTR ciphertext, first 32 bytes |
+| 13–20 | `0x034`–`0x053` | **tag HMAC**, 32 bytes |
+| 21–31 | `0x054`–`0x07F` | plaintext settings tail, 44 bytes |
+| 32–39 | `0x080`–`0x09F` | **data HMAC**, 32 bytes |
+| 40–129 | `0x0A0`–`0x207` | AES-128-CTR ciphertext, remaining 360 bytes |
 | 130–134 | `0x208`–`0x21B` | dynamic lock bits, `CFG0`, `CFG1`, password, `PACK` — **copied verbatim from the source `.bin`**: neither identity-derived nor HMAC-covered |
 
-**Two coordinate systems exist and this table uses only one of them.** The pinned corpus also
-names the HMACs by their *decrypted/internal* offsets (`0x034` and `0x1B4`), which do **not**
-land on those same tag-image bytes — `0x1B4` is page 109, inside the tag-HMAC span only under
-the internal layout. The design rests on exactly one fact from either system — that the seed
-region is identity-derived and HMAC-covered, which is what makes a UID patch impossible — and
-that fact holds in both. **Reconciling the two systems against the pinned `amiitool` source is
-a known gap (G-9); nothing in this spec depends on which is preferred.**
+**Two coordinate systems exist, and the pinned `amiitool` source fixes the mapping between
+them** (`amiitool/amiibo.c:38-56`, `nfc3d_amiibo_tag_to_internal` /
+`nfc3d_amiibo_internal_to_tag`). The table above is in tag-image coordinates — what the device
+holds and serves and what the console reads. The sealing routine's plaintext cache is in the
+library's *internal/decrypted* layout (520 bytes, 130 pages), where the same bytes sit at
+different offsets:
+
+| Region | Tag-image | Internal cache |
+| --- | --- | --- |
+| identity block (the KDF seed region) | `0x000`–`0x007` | `0x1D4`–`0x1DB` |
+| tag HMAC | `0x034`–`0x053` | `0x1B4`–`0x1D3` |
+| data HMAC | `0x080`–`0x09F` | `0x008`–`0x027` |
+
+The cryptographically load-bearing fact is the same in both systems — the identity block is
+the KDF seed and the tag HMAC covers it, which is what makes a UID byte-patch impossible — and
+the permutation above says where each region sits. Reconciling the two systems against the
+pinned source was **G-9**; it is settled, not preferred (§12.3, `amiitool-sealing-port.md`
+§1, verified against `amiitool/amiibo.c`).
 
 One consequence the container must respect: the plaintext cache produced by the sealing
 routine uses the library's own layout, in which the tag's identity block appears at `0x1D4`.
