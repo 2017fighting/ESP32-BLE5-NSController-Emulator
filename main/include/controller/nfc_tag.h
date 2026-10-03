@@ -67,6 +67,24 @@ extern "C" {
  * read carries 64 bytes — 16 pages — and the whole tag is 9 round trips. */
 #define NFC_TAG_READ_CHUNK 64u
 
+/* §6.6's open offset-space question, as the bench's one knob (§12.2 validation
+ * 5, issue #36). The canonical capture reads at wire offset `0x46` the bytes
+ * that sit at tag-image offset `0x0A` — the corpus's own page 2 carries
+ * `0F E0`, so the capture's leading `0f e0` is the image verbatim and §6.6's
+ * "first 16-bit word transposed" was a misreading of the lock bytes — which
+ * makes the hypothesis *wire = image + 0x3C*, unverified. The spec's default
+ * is **plain** (`0`): the console's wire offset is the image offset. A bench
+ * build can define this to the hypothesised base and test the mapping in one
+ * reflash; if validation 5 confirms a constant, the confirmed value becomes
+ * the spec's and this default changes with a §6.6 amendment.
+ *
+ * Reads (`0x15`) only. The one captured write (`0x14` at wire `0x0000`) fits no
+ * offset shift — its payload opens on the write counter, not the image — so
+ * writes stay plain until a capture says otherwise. */
+#ifndef NFC_TAG_READ_WIRE_BASE
+#define NFC_TAG_READ_WIRE_BASE 0u
+#endif
+
 /* §6.1/§6.3: the identity is the seven-byte NFC UID. */
 #define NFC_TAG_UID_SIZE 7u
 

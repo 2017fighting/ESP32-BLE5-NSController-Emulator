@@ -109,6 +109,19 @@ not be the next one it sees (the freshness requirement, chapter 6). So on reconn
 container mints a fresh identity and re-places **before the console's first scan** — the same
 action it already takes on `SCAN_ENDED` (§6.5), so this is a policy, not new machinery.
 
+> **A measured caveat (bench #36, `amiibo-read-bench.md` §3), recorded not solved.** The word
+> "harmless" above has one observed counterexample: with a tag placed and the console **asleep**,
+> the link loops — console drop (`reason=531`) → the device's wake advert wakes the console →
+> reconnect → this policy rotates and re-places → the resubscribe re-asserts byte `0x02` → drop
+> again — **4 cycles in 60 s** on an attended home menu and **7 in 90 s** in system settings, and
+> the operator watched the console sleep/wake in a loop until they unpaired. The contrast rows:
+> #38's sleep/wake cycles with **no tag placed** never looped, and a placement against a console
+> **awake** on a screen produced **0 drops in 75 s** twice. So the loop needs the placement and
+> the sleeping console together; which side closes it (unplace-on-drop instead of
+> keep-and-rotate, or hold the rotation until the console asks) is a scoping question for a
+> policy ticket, not a silent edit here. Until it is decided: **a placement must not outlive its
+> scan window on the wire** — bench scripts unplace at the window's edge for exactly this reason.
+
 ### Console never connected → **allow `START` and `PLACE_AMIIBO`, warn**
 
 The device does not need the console to run a macro. Refusing would be dishonest about a

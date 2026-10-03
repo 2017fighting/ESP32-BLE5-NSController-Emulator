@@ -14,8 +14,9 @@ Verified against the tree, not assumed:
 | USB-CDC backend | `main/src/transport/transport_usb_cdc.c` | no TX ring and no TX task; `zc_reset(tp->rx_buffer)` on re-attach (`:118-119`) |
 | Protocol seam | `main/src/protocol/protocol_router.c`, `easycon/*` | two layers: `SIMPLE`, `EASYCON` |
 | HID | `main/src/controller/hid_controller.c`, `hid_controller_pro2.c` | Pro2 report, front/back buffer, `controller_hid_commit` (`:233`), `pro2_report_init` (`:61`) — already the neutral template §4.6 needs; the `nfc_state` byte at `0x0C` is driven by `controller_ops_t.set_nfc_state` (#25) |
-| Console protocol | `main/src/ns2_codec.c` | command handlers; `cmd_0x01_handler` routes `0x03`/`0x04`/`0x05`/`0x06`/`0x14`/`0x15` to the NFC tag server (#25) and keeps `0x0C` as its constant |
+| Console protocol | `main/src/ns2_codec.c` | command handlers; `cmd_0x01_handler` routes `0x03`/`0x04`/`0x05`/`0x06`/`0x14`/`0x15` to the NFC tag server (#25) and keeps `0x0C` as its constant — the documented `61 12 50 0d` since bench #36's A/B | 
 | NFC tag server | `main/src/controller/nfc_tag.c` | §4.9's state machine and §6.6's 540-byte byte-sink, portable and host-tested; the singleton, the report byte and `SCAN_ENDED` live in `control_parser.c` |
+| NFC console-traffic trace | `main/src/protocol/control/nfc_trace.c` | §6.6's bench instrument (#36): the console's NFC exchanges with the CRC of what was served, accumulated in RAM and drained as `console nfc:` INFO at the scan's edge — never logged inline, so the ~9 round trips never pay for their own instrumentation |
 | BLE | `main/src/gap.c`, `main/src/gatt.c` | NimBLE peripheral; GATT service with `0x000e` HID notify, `0x0014`/`0x0016` command write, `0x001a` notify |
 | Flows | `sdkconfig:1761` `CONFIG_FREERTOS_HZ=100`; `main/Kconfig.projbuild` `HID_REPORT_INTERVAL` default 15, range 5–100 | |
 
@@ -107,6 +108,7 @@ Nothing in this list needs a new transport, a new radio, or a filesystem.
 | HID report front/back buffers | 63 B each | process lifetime |
 | Control-layer frame buffers | decoded `max_frame` (512 B) plus the COBS block and encoded wire form, up to `max_frame + max_frame/254 + 3` ≈ 517 B per direction (§2.2) | process lifetime |
 | NFC chunk buffer | one `0x15` response, ~75 B | process lifetime |
+| NFC trace ring (`nfc_trace_t`) | 16 × ~100 B ≈ 1.7 KB | process lifetime; one scan's worth of distinct exchanges, drained and reset at each scan's edge (#36) |
 
 **`plan_slots = 1`, so the worst single allocation is 64 KiB**, and it fits internal SRAM
 without PSRAM. Two measured facts bound the risk:

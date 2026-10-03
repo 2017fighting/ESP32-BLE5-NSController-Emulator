@@ -211,10 +211,27 @@ and they are firmware changes rather than protocol changes:
 
 - **The console-facing *offset* space is still unverified.** The canonical capture reads at
   wire offset `0x46` and the returned data opens on the image's static-lock/capability bytes at
-  tag-image offset `0x0A` with the first 16-bit word transposed, so the wire offset is not a
-  tag-image byte offset. This is validation 5's question (§12.2, [Bench: does the console
-  poll a placed tag and read all 540 bytes?](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/36));
-  the server serves plain byte offsets until the bench says otherwise.
+  tag-image offset `0x0A` — the corpus's own page 2 carries `0F E0`, so the capture's leading
+  `0f e0` is the image **verbatim** and the earlier "first 16-bit word transposed" reading was
+  wrong; the hypothesis is a constant shift, **`wire = image + 0x3C`**, not a permutation. The
+  question is still open — no `0x15` exchange has ever been observed from a real console
+  (§12.2 row 5, `amiibo-read-bench.md`) — and the server serves plain byte offsets until the
+  first traced read says otherwise. The knob for that day is `NFC_TAG_READ_WIRE_BASE`
+  (`nfc_tag.h`, default `0`): reads below the base answer nothing, the echo always echoes the
+  wire offset, writes stay plain (the one captured write fits no shift), and the host suite
+  runs under both compiles in CI.
+- **Every console NFC exchange is traced, never logged inline.** `nfc_trace.h`/`.c` (portable,
+  host-tested) records each distinct `(subcommand, offset)` with the CRC of exactly the bytes
+  served — §2.2's call — and `control_parser.c` drains it as `console nfc:` INFO lines at the
+  *scan's* edge (the console's `0x04`, the container's unplace), one line per lock hold, so the
+  ~9 round trips never pay for their own instrumentation. The `0x0C` probe logs its one line
+  inline (`ns2_codec.c`): once per console connect, never inside a scan. The bench that reads
+  these lines is `scripts/bench_amiibo_read.py`.
+- **The probe answers the documented `61 12 50 0d`.** The shipped firmware's `…10` was A/B-
+  tested against it on the bench — identical console behaviour to the subcommand on every
+  surface reached — and the documented value is now what the device answers. G-12 stays open
+  with its question narrowed (§12.3): the probe/status path is byte-neutral, the read-start
+  gate is the untested half.
 - The state byte is the `nfc_state` field of `hid_report_pro2_t` (§4.9), written into both report
   buffers by `controller_ops_t.set_nfc_state`. `STATUS.console_polling` is the server's *other*
   output — the console's own level, which moves on `0x03`/`0x04`/`0x05` in any mode, where the byte

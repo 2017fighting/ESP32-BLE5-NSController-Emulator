@@ -198,7 +198,19 @@ static size_t nfc_reply_read(nfc_tag_t *nfc, const uint8_t *payload, size_t len,
     if (!nfc->placed) {
         return 0;
     }
-    uint16_t offset = nfc_rd_le16(payload);
+    uint16_t wire = nfc_rd_le16(payload);
+#if NFC_TAG_READ_WIRE_BASE != 0
+    /* The bench knob (§6.6): serve `image[wire - base]`, so a wire base of
+     * 0x3C answers wire 0x46 with image 0x0A. The echo is still the wire
+     * offset — the capture's response echoes `46 00` behind the leading 0x00
+     * (`switch2_controller_research/commands.md:66`). */
+    if (wire < NFC_TAG_READ_WIRE_BASE) {
+        return 0;
+    }
+    uint16_t offset = (uint16_t)(wire - NFC_TAG_READ_WIRE_BASE);
+#else
+    uint16_t offset = wire;
+#endif
     if (offset >= NFC_TAG_SIZE) {
         return 0;
     }
@@ -212,8 +224,8 @@ static size_t nfc_reply_read(nfc_tag_t *nfc, const uint8_t *payload, size_t len,
     /* The captured response echoes the offset in its own little-endian pair
      * behind a leading `0x00` (`switch2_controller_research/commands.md:66`). */
     out[0] = 0x00;
-    out[1] = (uint8_t)(offset & 0xFFu);
-    out[2] = (uint8_t)(offset >> 8);
+    out[1] = (uint8_t)(wire & 0xFFu);
+    out[2] = (uint8_t)(wire >> 8);
     memcpy(&out[3], &nfc->tag[offset], chunk);
     return 3u + chunk;
 }

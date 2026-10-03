@@ -74,4 +74,22 @@ jobs:
               -o "$RUNNER_TEMP/test_nfc_tag" test/host/test_nfc_tag.c \
               main/src/controller/nfc_tag.c
             "$RUNNER_TEMP/test_nfc_tag"
+            # #36: the same suite again with §6.6's bench knob set — the wire
+            # base a bench build can flip — asserting the mapped slice while
+            # the plain suite above stays the spec's default.
+            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_READ_WIRE_BASE=0x3cu \
+              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_wire" \
+              test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
+            "$RUNNER_TEMP/test_nfc_tag_wire"
+          done
+
+      - name: C — the NFC console-traffic trace (#36)
+        run: |
+          set -euo pipefail
+          for flags in "" "-g -fsanitize=address,undefined -fno-omit-frame-pointer"; do
+            cc -std=c11 -Wall -Wextra -Werror $flags -Imain/include -Itest/host \
+              -o "$RUNNER_TEMP/test_nfc_trace" test/host/test_nfc_trace.c \
+              main/src/protocol/control/nfc_trace.c \
+              main/src/protocol/control/control_frame.c
+            "$RUNNER_TEMP/test_nfc_trace"
           done

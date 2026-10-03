@@ -99,9 +99,13 @@ static void build_tag(uint8_t tag[NFC_TAG_SIZE], uint8_t seed)
     }
 }
 
-static size_t read_buffer(nfc_tag_t *nfc, uint16_t offset, uint8_t *out, size_t cap)
+static size_t read_buffer(nfc_tag_t *nfc, uint16_t image_off, uint8_t *out, size_t cap)
 {
-    const uint8_t req[2] = {(uint8_t)(offset & 0xFFu), (uint8_t)(offset >> 8)};
+    /* The wire offset a given image byte is served at: its own address in the
+     * plain space, base-shifted in a bench build (§6.6). The suite speaks image
+     * offsets throughout; this is the one place the wire space appears. */
+    const uint16_t wire_off = (uint16_t)(image_off + NFC_TAG_READ_WIRE_BASE);
+    const uint8_t req[2] = {(uint8_t)(wire_off & 0xFFu), (uint8_t)(wire_off >> 8)};
     return nfc_tag_command(nfc, NFC_CMD_READ_BUFFER, req, sizeof(req), out, cap);
 }
 
@@ -190,13 +194,15 @@ static void test_read_buffer_slices_page_wise(void)
     uint8_t out[3 + NFC_TAG_READ_CHUNK];
     size_t n = read_buffer(&nfc, 0, out, sizeof(out));
     CHECK(n == 3 + NFC_TAG_READ_CHUNK, "0x15 serves a 64-byte chunk, got %zu", n);
-    CHECK(out[0] == 0x00 && out[1] == 0x00 && out[2] == 0x00,
-          "0x15 echoes the requested offset behind a leading zero");
+    CHECK(out[0] == 0x00 && out[1] == (uint8_t)NFC_TAG_READ_WIRE_BASE &&
+              out[2] == (uint8_t)(NFC_TAG_READ_WIRE_BASE >> 8),
+          "0x15 echoes the requested wire offset behind a leading zero");
     CHECK(memcmp(&out[3], tag, NFC_TAG_READ_CHUNK) == 0, "0x15 serves the image from the offset");
 
     n = read_buffer(&nfc, 0x40, out, sizeof(out));
     CHECK(n == 3 + NFC_TAG_READ_CHUNK, "a second page-aligned read is a full chunk");
-    CHECK(out[1] == 0x40 && out[2] == 0x00, "the echo carries the offset back");
+    CHECK(out[1] == (uint8_t)(0x40u + NFC_TAG_READ_WIRE_BASE),
+          "the echo carries the wire offset back");
     CHECK(memcmp(&out[3], &tag[0x40], NFC_TAG_READ_CHUNK) == 0, "the slice starts at 0x40");
 
     /* The last partial chunk is 540 - 512 = 28 bytes, not a padded 64. */
@@ -220,6 +226,66 @@ static void test_read_buffer_needs_a_tag(void)
     CHECK(read_buffer(&nfc, 0, out, sizeof(out)) == 0,
           "0x15 answers nothing while no tag is placed (§6.5's gap)");
 }
+
+#if NFC_TAG_READ_WIRE_BASE != 0
+/* The bench build's one question (§6.6, §12.2 validation 5): with the wire base
+ * set, the console's wire offset maps onto the image at `wire - base` — the
+ * capture's `0x46` answers the image's `0x0A` — while the echo stays the wire's
+ * own value. Everything else about the slice (chunk size, short tail, refusal
+ * beyond the image) is the base-0 suite's, unchanged — this test drives the
+ * raw wire offsets directly, unlike `read_buffer`'s image-offset translation. */
+static size_t read_wire(nfc_tag_t *nfc, uint16_t wire_off, uint8_t *out, size_t cap)
+{
+    const uint8_t req[2] = {(uint8_t)(wire_off & 0xFFu), (uint8_t)(wire_off >> 8)};
+    return nfc_tag_command(nfc, NFC_CMD_READ_BUFFER, req, sizeof(req), out, cap);
+}
+
+static void test_the_wire_base_maps_reads_only(void)
+{
+    nfc_tag_t nfc;
+    nfc_tag_init(&nfc);
+    uint8_t tag[NFC_TAG_SIZE];
+    build_tag(tag, 0x20);
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now++);
+
+    uint8_t out[3 + NFC_TAG_READ_CHUNK];
+
+    /* The capture itself: wire 0x46 serves the image's static-lock/CC bytes. */
+    size_t n = read_wire(&nfc, 0x46, out, sizeof(out));
+    CHECK(n == 3 + NFC_TAG_READ_CHUNK, "wire 0x46 is a full chunk, got %zu", n);
+    CHECK(out[0] == 0x00 && out[1] == 0x46 && out[2] == 0x00,
+          "the echo is the wire offset, not the image's");
+    CHECK(memcmp(&out[3], &tag[0x0A], NFC_TAG_READ_CHUNK) == 0,
+          "wire 0x46 serves image 0x0A — the capture's exchange");
+
+    /* The image's head is reachable at its own wire address. */
+    n = read_wire(&nfc, NFC_TAG_READ_WIRE_BASE, out, sizeof(out));
+    CHECK(n == 3 + NFC_TAG_READ_CHUNK && memcmp(&out[3], tag, NFC_TAG_READ_CHUNK) == 0,
+          "wire base serves the image's first byte");
+    CHECK(out[1] == (uint8_t)NFC_TAG_READ_WIRE_BASE, "that echo is the base, not zero");
+
+    /* Below the base is the console's own header space: nothing to serve. */
+    CHECK(read_wire(&nfc, NFC_TAG_READ_WIRE_BASE - 1, out, sizeof(out)) == 0,
+          "a wire offset below the base has no image byte");
+
+    /* The tail is short exactly as the plain space's is. */
+    n = read_wire(&nfc, NFC_TAG_READ_WIRE_BASE + 512, out, sizeof(out));
+    CHECK(n == 3 + 28, "the image's tail is 28 bytes at any base, got %zu", n);
+    CHECK(memcmp(&out[3], &tag[512], 28) == 0, "the tail is the image's last 28 bytes");
+    CHECK(read_wire(&nfc, NFC_TAG_READ_WIRE_BASE + NFC_TAG_SIZE, out, sizeof(out)) == 0,
+          "past the image's end there is nothing");
+
+    /* Writes stay plain: the one captured write (wire 0x0000) fits no shift, so
+     * the base must not move it. */
+    uint8_t write[8] = {0x00, 0x00, 0x04, 0x00, 0xAA, 0xBB, 0xCC, 0xDD};
+    nfc_tag_command(&nfc, NFC_CMD_WRITE_BUFFER, write, sizeof(write), out, sizeof(out));
+    CHECK(read_wire(&nfc, 0, out, sizeof(out)) == 0,
+          "wire 0 is below the read base, so reads there still serve nothing");
+    n = read_wire(&nfc, NFC_TAG_READ_WIRE_BASE, out, sizeof(out));
+    CHECK(n == 3 + NFC_TAG_READ_CHUNK && memcmp(&out[3], "\xAA\xBB\xCC\xDD", 4) == 0,
+          "the write landed at image 0 — plain, unshifted");
+}
+#endif
 
 /* ------------------------------------------------------------- place/unplace */
 
@@ -468,6 +534,9 @@ int main(void)
     test_status_without_a_tag();
     test_read_buffer_slices_page_wise();
     test_read_buffer_needs_a_tag();
+#if NFC_TAG_READ_WIRE_BASE != 0
+    test_the_wire_base_maps_reads_only();
+#endif
     test_unplace_clears_the_state();
     test_the_report_byte_is_mode_gated();
     test_replace_emits_the_gap();

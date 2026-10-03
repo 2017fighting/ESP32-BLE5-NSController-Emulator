@@ -221,11 +221,20 @@ static uint8_t cmd_0x01_handler(const uint8_t subcmd, const uint16_t payload_len
     const uint8_t* data_in, uint8_t* data_out) {
     switch(subcmd) {
         case 0x0c:
-            // 61 12 50 10
+            // 61 12 50 0d — the documented NCI identification (G-12's bench
+            // variant, issue #36: the shipped firmware says 0x10, the canonical
+            // capture says 0x0d, and the console never proceeded to a read with
+            // the 0x10 — this single byte is under test).
             data_out[0] = 0x61;
             data_out[1] = 0x12;
             data_out[2] = 0x50;
-            data_out[3] = 0x10;
+            data_out[3] = 0x0d;
+            /* #36 / G-12: the probe is the console's NFC handshake, and the one
+             * NFC line the deployment build logs *inline* — it fires once per
+             * console connect, never inside a scan, so it costs no timing. It is
+             * also the G-12 witness: which value was served, and what the
+             * console did next (§12.2 row 4). */
+            ESP_LOGI("control", "console nfc: sub=0c rsp=6112500d");
             return 0x04;
 #ifdef CONFIG_PROTOCOL_LAYER_CONTROL
         default: {

@@ -27,6 +27,7 @@
 #include "controller/hid_controller.h"
 #include "controller/hid_controller_pro2.h"
 #include "controller/nfc_tag.h"
+#include "protocol/control/nfc_trace.h"
 #include "protocol/control/control_events.h"
 #include "protocol/control/control_executor.h"
 #include "protocol/control/control_link.h"
@@ -78,6 +79,10 @@ typedef struct {
     /* #25: the tag the console is served from. Its `state` is the HID report's
      * `nfc_state` byte and `STATUS.console_polling` at once (§4.9). */
     nfc_tag_t nfc;
+    /* #36: the console's NFC traffic, drained as INFO text at the scan's edge
+     * (§6.6, §12.2 validations 4/5) — never logged inline, because the ~9
+     * round trips are exactly what the bench times. */
+    nfc_trace_t nfc_trace;
     uint8_t tx[CONTROL_WIRE_MAX];
 } control_parser_state_t;
 
@@ -87,6 +92,13 @@ static control_parser_state_t s_control;
  * the staging-close line can report the transfer's delta (see the instrument
  * comment in control_parser_parse_frame). Written by the protocol task only. */
 static uint32_t s_drops_at_open;
+
+/* #36: the NFC trace owes its readout. Set under the state lock wherever a
+ * scan's edge is observed (the console's `0x04`, the container's unplace),
+ * drained by the 10 ms task outside it — the two NFC paths that could flush
+ * both hold the lock, and a readout is up to ~16 INFO lines of UART, which is
+ * not lock-holding time. */
+static volatile bool s_nfc_flush_pending;
 
 /*
  * One lock for the state model, because three tasks reach it: the parser task
@@ -577,9 +589,30 @@ static void control_unplace_tag_effect(void *ctx)
 {
     (void)ctx;
     nfc_tag_unplace(&s_control.nfc);
+    /* The unplace is a scan edge too (§6.5): whatever the console did with the
+     * tag is a complete story once the tag leaves the field. */
+    s_nfc_flush_pending = true;
 }
 
 /* ---------------------------------------------------------- the executor task */
+
+/* #36: drain the NFC trace as INFO text. One line per lock hold — formatting
+ * is a slot's worth of work — so the state lock is never held across a UART
+ * write, and the drain can interleave with a console that starts a new scan
+ * mid-readout (a new event simply appends and the loop continues). */
+static void nfc_trace_flush_log(void)
+{
+    char line[NFC_TRACE_LINE_MAX];
+    control_ctl_lock();
+    size_t n = nfc_trace_format(&s_control.nfc_trace, line, sizeof(line));
+    control_ctl_unlock();
+    while (n > 0) {
+        ESP_LOGI("control", "%s", line);
+        control_ctl_lock();
+        n = nfc_trace_format(&s_control.nfc_trace, line, sizeof(line));
+        control_ctl_unlock();
+    }
+}
 
 /*
  * §7.3 step 5: the task that walks the plan. `10 ms` is one tick at
@@ -601,6 +634,12 @@ static void control_executor_task(void *arg)
          * deadline, never an extended gap. */
         nfc_tag_tick(&s_control.nfc, now_ms);
         control_ctl_unlock();
+        /* #36: the NFC trace's deferred readout, on the tick after the edge that
+         * owed it — see `s_nfc_flush_pending`. */
+        if (s_nfc_flush_pending) {
+            s_nfc_flush_pending = false;
+            nfc_trace_flush_log();
+        }
         vTaskDelayUntil(&last, pdMS_TO_TICKS(CONTROL_EXECUTOR_TICK_MS));
     }
 }
@@ -624,6 +663,8 @@ void control_parser_init(void)
     control_state_set_event_sink(&s_control.ctl, &sink);
     control_panic_init(&s_control.panic);
     nfc_tag_init(&s_control.nfc);
+    nfc_trace_init(&s_control.nfc_trace);
+    s_nfc_flush_pending = false;
     const nfc_tag_events_t nfc_events = {
         .ctx = NULL,
         .state_changed = nfc_state_changed,
@@ -714,6 +755,14 @@ size_t control_nfc_command(uint8_t subcmd, const uint8_t *payload, size_t len, u
      * than introducing a second lock and a lock order. */
     control_ctl_lock();
     size_t n = nfc_tag_command(&s_control.nfc, subcmd, payload, len, out, out_cap);
+    /* #36: record the exchange (the CRC is over exactly the `n` bytes served)
+     * and, on the scan's end, owe the readout — logged a tick later, off this
+     * path entirely, so the ~9 round trips the bench times never pay for their
+     * own instrumentation (§6.6, `nfc_trace.h`). */
+    nfc_trace_feed(&s_control.nfc_trace, subcmd, payload, len, out, n, control_now_ms());
+    if (subcmd == NFC_CMD_STOP_POLLING) {
+        s_nfc_flush_pending = true;
+    }
     control_ctl_unlock();
     return n;
 }
