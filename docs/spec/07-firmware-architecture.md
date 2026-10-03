@@ -160,14 +160,26 @@ task that calls `ble_advertise()`. That is twice the 2048-byte timer-service sta
 and the size the firmware's other NimBLE-calling tasks use (`controller_task`; the NimBLE host
 task's own default), because the call depth is shared with them even though the stack is not.
 The task logs its minimum-ever free stack at `DEBUG`, so the margin the fix relies on is a
-measurement rather than an assumption. **The bench re-run — sleep/wake cycles with no
-`rst:0xc`, before and after counts — is that ticket's Done-when, and it is what makes the fix
-validated rather than merely landed.**
+measurement rather than an assumption. **The bench re-run landed** (`advertise-restart-bench.md`
+§1, §3): **0 overflows and 0 `rst:0xc` in 22 sleep/wake cycles**, against
+**8 overflows and 8 `rst:0xc` in 26** on the pre-fix firmware, and the new task's minimum-ever
+free stack is **2172 B of its 4096**.
+
+**The bench also corrects the ticket's expectation, and this is the part worth reading.** The
+pre-fix callback does *not* reproduce at `HEAD`: with the same `ble_advertise()` still on the
+timer task, the timer service task bottoms out at **52 B free of 2048** — measured with a probe
+in `app_main` that never touches the callback's own frame — and it did not tip in **41
+disconnects**, at 921600 or at 115200. The 8/19 rate belongs to the base firmware's console path,
+which wrote `ESP_LOG` straight to the ROM console on a driverless UART0 and is deeper than the
+log hook of §2.2; that path overflows 8 times in 26. So at `HEAD` the defect is **latent rather
+than manifest**: 52 bytes is still not a design — a callback that leaves 2.5% of its stack is one
+edit away from the same crash, and the fix is what turns that depth into a budgeting decision —
+but a `HEAD` rate quoted as 8/19 would overstate both the defect and the fix.
 
 This mattered because it made **a device reboot an ordinary event**, which is why the
 container's recovery story keys on `boot_id` (§2.8) and why nothing about a reboot may be
-treated as exceptional. **That stance does not change with the fix**: the fix is not
-bench-validated yet, a reboot can have causes this callback never had, and the device's
+treated as exceptional. **That stance does not change with the fix**: a reboot can have causes
+this callback never had, and the device's
 statelessness (ADR-0004) is what makes the recovery safe either way.
 
 **2 · `ble_gap_update_params` fails on every connection, harmlessly.** `gap.c:82-83` sets

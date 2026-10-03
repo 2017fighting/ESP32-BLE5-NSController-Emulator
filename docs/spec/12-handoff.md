@@ -65,7 +65,7 @@ observed to ship safely.
 | 5 | Does the console read the 540 bytes? | the 9-round-trip read of §6.4 | |
 | 6 | **Does freshness key on the UID on NS2?** | two rotations, two scans, one figure, watch the game's per-amiibo bookkeeping | the feasibility branch: fall back to physical tags or a PN532 (the research's documented fallbacks) |
 | 7 | Is a pass resumed mid-press a problem? | start a macro, drop the console link, reconnect | the container's stop-on-drop policy (chapter 9) already avoids needing this answered |
-| 8 | Does the device still reboot across sleep/wake cycles after the §7.6 fix? | sleep/wake cycles at `INFO`, before and after counts; [Fix the gap.c timer-stack overflow](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/27) owns it | the fix is unvalidated and stays suspect; §9.2's "expect a reboot" policy is what the container relies on either way |
+| 8 | Does the device still reboot across sleep/wake cycles after the §7.6 fix? | sleep/wake cycles on the DEBUG build the 8/19 figure came from, before and after counts; [Fix the gap.c timer-stack overflow](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/27) owns it | **Answered** — §7.6 holds the before/after counts and the margins (`advertise-restart-bench.md` §1, §3); §9.2's "expect a reboot" policy is what the container relies on either way |
 
 ## 12.3 Known gaps
 
@@ -80,7 +80,7 @@ inference, or a decision to leave something unowned.
 | **G-4** | **Is a macro run harmless against an absent console?** Unobservable — the base firmware has no `MACRO` mode | §9.4 | the container allows it and warns; a wrong answer is a console-side surprise, not corruption |
 | **G-5** | **Is the console content with a pass resumed mid-press after a link drop?** Unobservable for the same reason | §4.7, §9.4 | the container stops the run on a console drop, so the gap cannot bite |
 | **G-6** | **Two amiibo facts are NS1 inferences, not NS2 measurements:** that freshness keys on the UID, and that an observable unplace is required. The console never enters `.nfp` on this firmware, so neither is confirmed *or* falsified | §6.5, §9.4 | the feasibility branch; the design emits the gap anyway, which is the safe superset |
-| **G-7** | **The 8/19 reboot rate was a DEBUG-build figure, and it is now a *fixed* defect's figure.** The advertise-restart work moved off the timer task (§7.6); whether any reboot survives is what [Fix the gap.c timer-stack overflow](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/27) benches | §9.2 | the fix is un-benched; nothing in the design depends on the rate, and `boot_id` recovery stays |
+| **G-7** | **Closed.** The advertise-restart work moved off the timer task (§7.6) and was benched: the fix holds across sleep/wake cycles, and the pre-fix rate turned out to describe the base firmware's console path rather than `HEAD`, where the same callback is latent. Retired by [Fix the gap.c timer-stack overflow](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/27) | §7.6, §9.2, `advertise-restart-bench.md` §1, §3 | — |
 | **G-8** | **Closed.** The fixture exists at `fixtures/plan/`, asserted by both the Python compiler test and the host-side C test, and CI runs both. Retired by [Macro compiler, plan cache and the golden fixture (G-8, G-13)](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/20) — the second gap closed rather than carried | §5.7 | — |
 | **G-9** | **The NTAG215 region map exists in two coordinate systems** (tag-image vs internal/decrypted), and the sealing routine's library uses its own for the plaintext cache | §6.3 | a wrong index in the sealing module; nothing in the protocol depends on it, and the fixture-plus-library comparison catches it |
 | **G-10** | **`scripts/package_firmware.py` fails with exit 0** and ships an `n8` name for a 16 MB module | §10.1 | use `package_firmware_v5.py`; the broken script should be deleted or fixed |
@@ -110,8 +110,9 @@ Ranked, with the cost of being wrong:
    The lesson it demonstrated is the reason stage 0 existed: settle the layout on paper, or pay
    for it twice.
 5. **The storage/OTA reservation** (G-3). Trivially reversible.
-6. **The reboot rate** (G-7). Does not invalidate anything; only the container's error-wording
-   budget.
+6. **~~The reboot rate~~** (G-7) — **retired.** The fix is benched and the pre-fix callback did
+   not reproduce at `HEAD` at all (§7.6, `advertise-restart-bench.md` §1). Nothing in the design
+   depended on the rate either way.
 
 ## 12.5 What is deliberately not decided here
 

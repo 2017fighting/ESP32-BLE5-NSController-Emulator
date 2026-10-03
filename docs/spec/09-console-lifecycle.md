@@ -62,11 +62,10 @@ the split was not "which disconnects reached the callback"; it was a stack sitti
 and tipping over non-deterministically. The rate is DEBUG-influenced; the fragility is
 structural.
 
-*(The overflow itself is **fixed at `HEAD`** (§7.6), but the observation above is the pre-fix
-measurement and the policy below is unchanged: a `boot_id` change has causes beyond this
-callback, and the fix is un-benched until
-[issue #27](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/27)'s
-sleep/wake session lands.)*
+*(The overflow itself is **fixed and benched at `HEAD`** (§7.6). That section also reattributes
+the observation above: the 8/19 rate measured the pre-fix *console path*, not `HEAD`, where the
+same callback is latent rather than manifest. The observation stays as measured, and the policy
+below is unchanged — a `boot_id` change has causes beyond this callback.)*
 
 **The container's consequence is not "it is fixed now" — it is "expect a reboot anyway".**
 A container watching `boot_id` for the ADR-0004 recovery flow must tolerate a device restart
@@ -135,9 +134,8 @@ These are **known gaps**, carried in §12.3, not silent assumptions:
 | **G-6** — does per-scan freshness require an **observable** unplace through the PN7160 path? | the console never enters `.nfp`, so neither half can be checked |
 | **G-6** — does freshness actually key on the UID on NS2? | proven on NS1 through emuiibo's random-UUID toggle; the NS2-through-PN7160 equivalence is an inference |
 | **G-16** — does the 5 ms link hold **under macro load**? | the load question needs a `MACRO` mode to generate traffic |
-| **G-7** — how much of the reboot rate survives a release build? | the overflow that produced 8/19 is fixed (`gap.c`, §7.6); the fix itself is un-benched, and issue #27's sleep/wake session is what confirms it |
 
-The container's policy of §9.3 is chosen so that **none of the five gaps can produce a wrong
+The container's policy of §9.3 is chosen so that **none of the four gaps can produce a wrong
 input on the console**: the risky half (a resumed mid-press pass) is stopped rather than
 risked, and the freshness half is a superset (always emit the gap) rather than an assumption.
 That is the point of deciding policy on unverified facts: pick the branch that is safe under
