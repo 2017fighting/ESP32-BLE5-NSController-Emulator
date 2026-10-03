@@ -68,7 +68,7 @@ class MemoryTransport:
 
     @property
     def baud(self) -> int:
-        return 921600
+        return 115200  # the measured default (G-1's bench, #33)
 
     async def open(self) -> None:
         self._closed = False

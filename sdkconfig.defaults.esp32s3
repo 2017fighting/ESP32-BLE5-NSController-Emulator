@@ -29,9 +29,10 @@ CONFIG_BT_CTRL_BLE_MIN_CONN_INTERVAL_ENABLE=y
 # supersedes the base's "use usb cdc for transport layer" for the S3 build.
 CONFIG_TRANSPORT_LAYER_UART=y
 CONFIG_CONTROL_UART_PORT=0
-# 921600 is the spec's recommendation, not a measurement; bench ticket #33
-# settles it and 115200 is the documented fallback (G-1).
-CONFIG_CONTROL_UART_BAUD=921600
+# 115200, a bench fact (G-1 closed, #33): 921600 degenerates §2.7's window
+# blast (13–15 retries/4 KB, zero corruption) and 115200 survives every
+# transfer to the 65528 B capacity maximum — docs/research/baud-bench.md.
+CONFIG_CONTROL_UART_BAUD=115200
 # -1 keeps UART0's chip-default IO_MUX pins (the CH9102).
 CONFIG_CONTROL_UART_RX_PIN=-1
 CONFIG_CONTROL_UART_TX_PIN=-1

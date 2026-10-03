@@ -1,0 +1,18 @@
+# The G-1 flood build (issue #33, docs/research/control-link-stage1.md §4.3's
+# recipe): MCU debug on and LOG_MAXIMUM_LEVEL=DEBUG, so every received frame
+# draws the protocol/transport DEBUG lines through the shared log hook and the
+# HID task floods at report rate whenever no console is subscribed. During a
+# bulk transfer the §2.2 policy drops those lines after formatting them and
+# lets one per 100 ms onto the wire — the exact condition G-1 measures.
+#
+# Layer it over the tree defaults (fresh sdkconfig; defaults are read only on
+# creation):
+#
+#   rm -f sdkconfig
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;scripts/sdkconfig.flood" \
+#          -B build set-target esp32s3
+#   idf.py -B build build
+#
+# The 115200 fallback row is the same fragment plus CONFIG_CONTROL_UART_BAUD=115200.
+CONFIG_MCU_DEBUG=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

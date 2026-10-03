@@ -150,7 +150,7 @@ class ControlLink:
     container needs (ADR-0014) and the reason the boot wait is not a fixed sleep.
     """
 
-    def __init__(self, port: str, baud: int = 921600):
+    def __init__(self, port: str, baud: int = 115200):
         import serial  # imported here so --help works without pyserial
 
         self.ser = serial.Serial()
@@ -164,6 +164,13 @@ class ControlLink:
         self.ser.rts = False
         self.buf = bytearray()
         self.pending: list[Frame] = []
+        # Wire-level counters, for the bench phases that need to quote what the
+        # wire carried (G-1): bytes read, `0x00`-delimited segments, segments
+        # that were not frames (log lines and noise), frames that had the right
+        # 7+len geometry but failed the CRC (a reply split mid-frame is the one
+        # thing the shared TX lock exists to make impossible), and good frames.
+        self.counters = {"bytes_rx": 0, "segments": 0, "noise": 0,
+                         "noise_bytes": 0, "bad_crc": 0, "frames": 0}
         self._wait_ready()
 
     def _wait_ready(self, seconds: float = 15.0) -> None:
@@ -171,9 +178,10 @@ class ControlLink:
 
         A reset-on-open means the first couple of seconds are the ROM console at
         115200 and then the app's own banner, both arriving as *garbage* to a
-        921600 host; the BLE stack then takes a moment to come up. So the drain is
-        generous and the retry loop is the readiness test, rather than a fixed
-        sleep that would break whenever boot got slower.
+        host opened at the firmware's (post-init) baud; the BLE stack then takes
+        a moment to come up. So the drain is generous and the retry loop is the
+        readiness test, rather than a fixed sleep that would break whenever boot
+        got slower.
         """
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
@@ -196,6 +204,7 @@ class ControlLink:
             chunk = self.ser.read(4096)
             if chunk:
                 self.buf.extend(chunk)
+                self.counters["bytes_rx"] += len(chunk)
             # Split on the delimiter; the leading one is mandatory (§2.2).
             while True:
                 start = self.buf.find(b"\x00")
@@ -204,26 +213,68 @@ class ControlLink:
                 end = self.buf.find(b"\x00", start + 1)
                 if end < 0:
                     if start > 0:
+                        # Log text that ran ahead of the frame's leading
+                        # delimiter — dropped, and counted, never silent.
+                        self.counters["noise"] += 1
+                        self.counters["noise_bytes"] += start
                         del self.buf[:start]
                     break
                 block = bytes(self.buf[start + 1 : end])
+                if start > 0:
+                    self.counters["noise"] += 1
+                    self.counters["noise_bytes"] += start
                 del self.buf[: end + 1]
                 if not block:
                     continue
+                self.counters["segments"] += 1
                 try:
                     decoded = cobs_decode(block)
                 except ValueError:
+                    self.counters["noise"] += 1
+                    self.counters["noise_bytes"] += len(block)
                     continue
                 if len(decoded) < 7:
+                    self.counters["noise"] += 1
+                    self.counters["noise_bytes"] += len(block)
                     continue
                 ver, ftype, verb, plen = struct.unpack("<BBBH", decoded[:5])
                 if ver != PROTO_VER or len(decoded) != 7 + plen:
+                    self.counters["noise"] += 1
+                    self.counters["noise_bytes"] += len(block)
                     continue
                 crc = struct.unpack("<H", decoded[5:7])[0]
                 if crc16_ccitt_false(decoded[:5] + decoded[7:]) != crc:
+                    self.counters["bad_crc"] += 1
                     continue
+                self.counters["frames"] += 1
                 frames.append(Frame(ftype, verb, decoded[7:]))
         return frames
+
+    def send(self, verb: int, payload: bytes = b"") -> None:
+        """Write one REQUEST frame and return without waiting for its reply.
+
+        For the §2.7 bulk path, where chunks inside an ACK window carry no
+        reply and the sender streams a whole window before waiting.
+        """
+        self.ser.write(encode_frame(TYPE_REQUEST, verb, payload))
+        self.ser.flush()
+
+    def wait_reply(self, verb: int, timeout: float = 0.5) -> Frame:
+        """Wait for the next REPLY for `verb` (or any `ERROR`), without sending.
+
+        The same reply-matching rules as `request`: an `ERROR` (verb 10)
+        answers any request, and unsolicited EVENTs are kept on `self.pending`
+        for the caller instead of being dropped.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for frame in self._read_frames(min(deadline, time.monotonic() + 0.05)):
+                if frame.type != TYPE_REPLY:
+                    self.pending.append(frame)
+                    continue
+                if frame.verb == verb or frame.verb == VERB_ERROR:
+                    return frame
+        raise TimeoutError(f"no reply to verb {verb} within {timeout}s")
 
     def request(self, verb: int, payload: bytes = b"", *, timeout: float = 0.5) -> Frame:
         """Sends one REQUEST and waits for its REPLY.
@@ -234,17 +285,7 @@ class ControlLink:
         """
         self.ser.write(encode_frame(TYPE_REQUEST, verb, payload))
         self.ser.flush()
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            for frame in self._read_frames(min(deadline, time.monotonic() + 0.05)):
-                if frame.type != TYPE_REPLY:
-                    # §3.3 events are unsolicited and arrive between replies;
-                    # keep them for the caller instead of dropping them here.
-                    self.pending.append(frame)
-                    continue
-                if frame.verb == verb or frame.verb == VERB_ERROR:
-                    return frame
-        raise TimeoutError(f"no reply to verb {verb} within {timeout}s")
+        return self.wait_reply(verb, timeout)
 
     def drain(self, seconds: float) -> list[Frame]:
         return self._read_frames(time.monotonic() + seconds)

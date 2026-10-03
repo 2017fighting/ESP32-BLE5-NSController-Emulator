@@ -31,9 +31,15 @@ from typing import Protocol, runtime_checkable
 #: by the compose override (ADR-0014).
 DEFAULT_PORT = "/dev/ttyACM0"
 
-#: A recommendation, not a bench fact — known gap G-1. The fallback is 115200.
-DEFAULT_BAUD = 921600
-FALLBACK_BAUD = 115200
+#: The measured default (G-1's bench, #33 — `docs/research/baud-bench.md`):
+#: 115200 survives every bulk transfer to the capacity maximum on both host
+#: stacks; 921600 degenerated §2.7's window blast (13–15 retries per 4 KB,
+#: zero corruption) and is rejected for the bulk path.
+DEFAULT_BAUD = 115200
+#: The rate a custom image may still run (the wire itself is clean at
+#: 921600; only the device-side bulk drain is not). Configuration, not a
+#: recommendation.
+FALLBACK_BAUD = 921600
 
 
 class TransportUnavailable(RuntimeError):
