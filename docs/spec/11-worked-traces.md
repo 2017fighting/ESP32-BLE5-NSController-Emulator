@@ -60,7 +60,7 @@ gap is a design guarantee chosen because something must leave the field for repe
 to work on NS1 (G-6). Step 9's freshness is also an inference from NS1, not a measurement on
 NS2 (G-6).
 
-## Trace C — the console goes away mid-macro, and the board reboots
+## Trace C — the console goes away mid-macro, and the device reboots
 
 State going in: `MACRO` running, console connected, plan committed.
 
@@ -71,7 +71,7 @@ State going in: `MACRO` running, console connected, plan committed.
 | 3 | **keeps replaying** — nothing in the device watches the console | loops on | | ADR-0008, §4.7 |
 | 4 | decides to stop: sends `STOP` | neutral release, `IDLE`, plan retained, `last_stop_reason=CONTAINER_STOP` | | §9.3, §4.3 |
 | 5 | shows `Stopped: console disconnected` as a **warning**, not an error, and does **not** restart | | | §9.3, §8.9 |
-| 6 | | ~3 s later the advertise-restart callback overflows the timer stack and reboots | | §9.2, §7.6 |
+| 6 | | the device reboots for a reason this trace does not model — power, watchdog, brownout; §7.6's overflow used to be the routine one | | §9.2, §7.6 |
 | 7 | sees the port drop and re-attach; sends `HELLO`; reads a **new `boot_id`** | boots to `mode=IDLE, plan_state=NONE, tag_state=NONE`, bond intact | | §2.8, ADR-0004 |
 | 8 | discards plan and UI state, requires a re-upload, and **does not** report the lost run as an error | — | | §9.2, §8.9 |
 | 9 | | | wakes, reconnects, re-runs its full init, re-subscribes HID itself | §9.1 |
@@ -84,7 +84,12 @@ contradictory until they are ordered: the device keeps running after the console
 unrelated reason (§9.2). Three separate mechanisms, and only the middle one is a policy. This
 is why chapter 9 states that a `boot_id` change is **normal operation** and why §2.8 forbids
 treating it as exceptional — a recovery story that assumed a reboot only follows a power
-cycle would break on roughly half of all sleep/wake cycles on this hardware.
+cycle would break whenever a reboot landed mid-run, which on the pre-fix firmware (§7.6) was
+roughly half of all sleep/wake cycles on this hardware.
+
+**Step 6's cause changed after this trace was written.** It named the §7.6 overflow; that
+overflow is fixed, so the step now stands for a reboot from any source. The recovery path the
+trace exercises is unchanged, which is the point: `boot_id` never says *why*.
 
 It also settles a wording problem: the run ended twice over (stopped by the container, then
 erased by a reboot). The container reports the first reason, because it is the one it knows,

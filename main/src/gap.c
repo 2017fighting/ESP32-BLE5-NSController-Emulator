@@ -8,12 +8,35 @@
 #endif
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "freertos/timers.h"
 
+// §7.6 defect 1: `ble_advertise()` composes `ESP_LOGI` format strings and a
+// 30-byte advertising buffer, and running it on the timer service task — whose
+// stack is `CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH` (2048 B, shared by every
+// timer callback in the firmware) — aborted the device with `rst:0xc` on 8 of 19
+// disconnects. The work therefore runs on this task, sized for it; the timer
+// keeps only the cancellable 3 s one-shot delay it is good at.
 static TimerHandle_t s_restart_adv_timer = NULL;
+static TaskHandle_t  s_restart_adv_task  = NULL;
+
+static void restart_adv_task(void* arg) {
+  while (1) {
+    // Coalesces: two disconnects inside the window are one advert.
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    ble_advertise();
+    // The margin the fix relies on, made visible rather than assumed. The
+    // high-water mark is in `StackType_t` units, so it is scaled to bytes.
+    ESP_LOGD(LOG_BLE_GAP, "advertise-restart task free stack, min ever: %u B",
+      (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+  }
+}
 
 static void restart_adv_timer_cb(TimerHandle_t xTimer) {
-  ble_advertise();
+  // Hand off; the timer task must stay as light as every other callback's.
+  if (s_restart_adv_task != NULL) {
+    xTaskNotifyGive(s_restart_adv_task);
+  }
 }
 
 static void print_conn_desc(struct ble_gap_conn_desc* desc) {
@@ -85,13 +108,19 @@ int handle_gap_event(struct ble_gap_event* event, void* arg) {
       }
       return 0;
     case BLE_GAP_EVENT_DISCONNECT:
-      ESP_LOGI(LOG_BLE_GAP, "disconnected, reason=%d, restart advertising after 5s", event->disconnect.reason);
+      ESP_LOGI(LOG_BLE_GAP, "disconnected, reason=%d, restart advertising after 3s", event->disconnect.reason);
 #ifdef CONFIG_PROTOCOL_LAYER_CONTROL
       // §3.3: `reason` is a u16 because the one measured value that matters is
       // 531 = 0x0213, which does not fit a byte. The drop changes no mode (§4.7).
       control_notify_console_link(CONTROL_CONSOLE_EVENT_DISCONNECTED,
                                   (uint16_t)event->disconnect.reason);
 #endif
+      if (s_restart_adv_task == NULL) {
+        if (xTaskCreate(restart_adv_task, "restart_adv", 4096, NULL, 4, &s_restart_adv_task) != pdPASS) {
+          ESP_LOGE(LOG_BLE_GAP, "failed to create advertise-restart task");
+          s_restart_adv_task = NULL;
+        }
+      }
       if (s_restart_adv_timer == NULL) {
         s_restart_adv_timer = xTimerCreate("restart_adv", pdMS_TO_TICKS(3000), pdFALSE, NULL, restart_adv_timer_cb);
       }

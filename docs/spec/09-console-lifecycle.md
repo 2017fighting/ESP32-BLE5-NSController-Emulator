@@ -56,20 +56,27 @@ confirmed or falsified.
 
 ## 9.2 Observed: the device's own reboot habit
 
-`gap.c`'s advertise-restart callback overflows the 2048-byte timer-service stack on **8 of 19
-disconnects**, each time with `rst:0xc` (§7.6). Every disconnect fires the timer at +3.00 s, so
-the split is not "which disconnects reached the callback"; it is a stack sitting at its limit
+`gap.c`'s advertise-restart callback overflowed the 2048-byte timer-service stack on **8 of 19
+disconnects**, each time with `rst:0xc` (§7.6). Every disconnect fired the timer at +3.00 s, so
+the split was not "which disconnects reached the callback"; it was a stack sitting at its limit
 and tipping over non-deterministically. The rate is DEBUG-influenced; the fragility is
 structural.
 
-**The design consequence is not "fix it" — it is "expect it".** A container watching `boot_id`
-for the ADR-0004 recovery flow **will** see a device restart mid-session, so:
+*(The overflow itself is **fixed at `HEAD`** (§7.6), but the observation above is the pre-fix
+measurement and the policy below is unchanged: a `boot_id` change has causes beyond this
+callback, and the fix is un-benched until
+[issue #27](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/27)'s
+sleep/wake session lands.)*
+
+**The container's consequence is not "it is fixed now" — it is "expect a reboot anyway".**
+A container watching `boot_id` for the ADR-0004 recovery flow must tolerate a device restart
+mid-session, so:
 
 - a `boot_id` change requires a full discard and re-upload, and that is normal operation;
 - a reboot during a macro silently ends the run, and the container's next `STATUS` after
   `HELLO` reports `mode=IDLE` with `last_stop_reason=NONE` — the run is simply gone;
 - the bond survives, so no re-pairing is needed;
-- nothing about this may be surfaced as an error, because it will happen to a working setup.
+- nothing about this may be surfaced as an error, because it can happen to a working setup.
 
 ## 9.3 The container's policy
 
@@ -128,7 +135,7 @@ These are **known gaps**, carried in §12.3, not silent assumptions:
 | **G-6** — does per-scan freshness require an **observable** unplace through the PN7160 path? | the console never enters `.nfp`, so neither half can be checked |
 | **G-6** — does freshness actually key on the UID on NS2? | proven on NS1 through emuiibo's random-UUID toggle; the NS2-through-PN7160 equivalence is an inference |
 | **G-16** — does the 5 ms link hold **under macro load**? | the load question needs a `MACRO` mode to generate traffic |
-| **G-7** — how much of the reboot rate survives a release build? | 8/19 is a DEBUG figure; the structural fragility is what generalises |
+| **G-7** — how much of the reboot rate survives a release build? | the overflow that produced 8/19 is fixed (`gap.c`, §7.6); the fix itself is un-benched, and issue #27's sleep/wake session is what confirms it |
 
 The container's policy of §9.3 is chosen so that **none of the five gaps can produce a wrong
 input on the console**: the risky half (a resumed mid-press pass) is stopped rather than

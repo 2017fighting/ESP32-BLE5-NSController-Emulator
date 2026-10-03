@@ -136,12 +136,10 @@ millisecond holds (ADR-0009) are what keep playback speed independent of all of 
 of that ceiling. **Any latency measurement from a DEBUG-logged run is a logging floor**, so
 timing work runs with `CONFIG_LOG_MAXIMUM_LEVEL=INFO` and the per-notification logs off.
 
-## 7.6 Two defects in the base firmware the design has to live with
+## 7.6 The base firmware's disconnect path: one defect fixed, one tolerated
 
-Both are real, measured, present at `HEAD`, and neither is fixed by this design.
-
-**1 · The advertise-restart callback overflows the timer task stack.** `gap.c:78-83` creates a
-one-shot 3 s `xTimerCreate` on disconnect; the callback calls `ble_advertise()`, which
+**1 · Fixed: the advertise-restart callback overflowed the timer task stack.** `gap.c` created
+a one-shot 3 s `xTimerCreate` on disconnect whose callback called `ble_advertise()`, which
 composes `ESP_LOGI` format strings and a 30-byte buffer on a task whose stack is
 `CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH = 2048` **bytes** (`sdkconfig:1778`; not set in any
 committed defaults file, so it is the IDF default). It fired 19 times in one session and
@@ -152,16 +150,27 @@ line, and it is wrong twice over: the timer-service task's stack is shared by *e
 timer callback in the firmware, so the constant has to cover the heaviest callback anyone ever
 adds, in code that has nothing to do with advertising; and the actual defect is that
 `ble_advertise()` — which composes log format strings — has no business running on a callback
-task at all. **The fix is to move that work off the timer task** (a queued call to the
-application task, or a dedicated small task), which is local to the file that owns it. The
-stack depth should be left at its default unless something else proves it needs raising.
+task at all. **The fix is to move that work off the timer task**, which is local to the file
+that owns it, and the stack depth stays at its default.
 
-This is not a curiosity: it makes **a device reboot an ordinary event**, which is why the
+**The fix landed with [Fix the gap.c timer-stack overflow](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/27).**
+The 3 s one-shot timer stays — it is the cancellable delay (`xTimerStop` on reconnect) and is
+good at it — and its callback now only `xTaskNotifyGive`s a dedicated 4096-byte `restart_adv`
+task that calls `ble_advertise()`. That is twice the 2048-byte timer-service stack it replaces,
+and the size the firmware's other NimBLE-calling tasks use (`controller_task`; the NimBLE host
+task's own default), because the call depth is shared with them even though the stack is not.
+The task logs its minimum-ever free stack at `DEBUG`, so the margin the fix relies on is a
+measurement rather than an assumption. **The bench re-run — sleep/wake cycles with no
+`rst:0xc`, before and after counts — is that ticket's Done-when, and it is what makes the fix
+validated rather than merely landed.**
+
+This mattered because it made **a device reboot an ordinary event**, which is why the
 container's recovery story keys on `boot_id` (§2.8) and why nothing about a reboot may be
-treated as exceptional. It is not this design's to fix and it belongs to whoever owns
-`gap.c`.
+treated as exceptional. **That stance does not change with the fix**: the fix is not
+bench-validated yet, a reboot can have causes this callback never had, and the device's
+statelessness (ADR-0004) is what makes the recovery safe either way.
 
-**2 · `ble_gap_update_params` fails on every connection, harmlessly.** `gap.c:54-58` sets
+**2 · `ble_gap_update_params` fails on every connection, harmlessly.** `gap.c:82-83` sets
 `itvl_min = 6` with `itvl_max = desc.conn_itvl`, an inverted range, and the call returns
 `BLE_HS_EINVAL` every time — it never reaches any floor check
 (`ns2-console-lifecycle.md` §4.2). The link still runs at `conn_itvl = 4` (**5 ms**) because

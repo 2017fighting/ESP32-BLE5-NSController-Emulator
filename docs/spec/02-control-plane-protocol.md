@@ -422,9 +422,11 @@ field the wire carries.
 | new `boot_id`, new power | discard the plan, the placement and the UI state; require re-upload (ADR-0004) |
 | different device or firmware | announce it; some verbs may not exist; disable what `features` does not claim |
 
-`boot_id` changes are **ordinary operation**, not an error: the console's own sleep/wake
-cycle reboots this board on roughly half of slow cycles (chapter 9, `ns2-console-lifecycle.md`
-§5.3). A recovery path that treats a reboot as exceptional will be wrong in normal use.
+`boot_id` changes are **ordinary operation**, not an error: a reboot can land mid-session for
+reasons the device never reports, and on the pre-fix firmware the console's own sleep/wake
+cycle did it on roughly half of slow cycles (chapter 9, `ns2-console-lifecycle.md` §5.3; the
+advertise-restart overflow behind that figure is fixed in §7.6). A recovery path that treats a
+reboot as exceptional will be wrong in normal use.
 
 ## 2.9 `CONFIG`
 

@@ -106,7 +106,7 @@ connect/disconnect/subscribe, and a planned or unplanned power cycle. On a conso
 reset, and it is the device's whole recovery story (§2.7).
 
 **`gap.c`'s current behaviour matches this by accident and must be preserved deliberately.**
-`main/src/gap.c:133-137` resets the HID report and restarts the report task on a `0x000e`
+`main/src/gap.c:179-183` resets the HID report and restarts the report task on a `0x000e`
 subscribe; that is the neutral re-arm this chapter requires. It must not be turned into a
 frame-0 restart.
 
