@@ -5,7 +5,7 @@ codec above it, `frame_io.py` is the request/ACK conversation above that, and
 `ns2device.session` is the verbs above that (§8.2).
 
 **The open sequence is fixed and non-negotiable.** The CH9102 wires DTR→GPIO0
-and RTS→EN; pyserial asserts both by default, which holds the board in reset and
+and RTS→EN; pyserial asserts both by default, which holds the device in reset and
 presents as "the device is doing nothing". The sequence in `open()` is the
 §8.3 code, in that order, and `close()` repeats the deassertion in a `finally`
 of its own before releasing the node:
@@ -197,7 +197,7 @@ class SerialPortTransport(SerialTransport):
     """A `SerialTransport` over the real node, with the §8.3 line discipline.
 
     `serial_factory` is injectable so the open sequence and the failure
-    classification are testable without a board; the default is the real
+    classification are testable without the device; the default is the real
     `serial.Serial`.
     """
 
@@ -236,9 +236,7 @@ class SerialPortTransport(SerialTransport):
                 dsrdtr=False,
                 rtscts=False,
             )
-        except serial.SerialException as exc:
-            raise _classify(self._port, exc) from exc
-        except OSError as exc:
+        except (serial.SerialException, OSError) as exc:
             raise _classify(self._port, exc) from exc
         # §8.3: deasserted on open, before any byte is read or written.
         self._deassert()

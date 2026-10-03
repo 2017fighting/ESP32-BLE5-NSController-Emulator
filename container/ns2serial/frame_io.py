@@ -21,7 +21,7 @@ the verbs (`ns2device.session`). It owns exactly four things:
 refuses to send anything while the link is not open. When the link dies the read
 loop marks the transport dead and wakes every waiter; the device session's
 `open()` tears the dead port down and opens a fresh one, and `HELLO` is the next
-frame after it (§2.8). No verb is ever rewritten, and no verb reaches the board
+frame after it (§2.8). No verb is ever rewritten, and no verb reaches the device
 between a link transition and its `HELLO`.
 """
 
@@ -40,6 +40,7 @@ from ..ns2device.model import (
     Event,
     EventKind,
     FrameType,
+    ProtocolError,
     Verb,
 )
 from .api import SerialTransport, TransportUnavailable
@@ -58,6 +59,9 @@ _LOG_LEVELS = {"V": "debug", "D": "debug", "I": "info", "W": "warn", "E": "error
 
 #: Marks the reply queue when the read loop dies, so a waiter wakes instead of hanging.
 _CLOSED = object()
+
+#: Marks the reply queue when a reply's header `ver` is not this protocol's (§2.8).
+_BAD_VERSION = object()
 
 
 class FrameTransport:
@@ -124,7 +128,7 @@ class FrameTransport:
         self._logs.put_nowait(_CLOSED)
 
     def _require_open(self) -> None:
-        """§2.8: no verb reaches the board without a `HELLO` on this connection.
+        """§2.8: no verb reaches the device without a `HELLO` on this connection.
 
         A dead link is reopened by the device session's `open()`, which is where
         the `HELLO` and the `boot_id` branch live — never by a stray verb.
@@ -179,6 +183,14 @@ class FrameTransport:
         self._events.put_nowait(_CLOSED)
 
     def _dispatch(self, frame: Frame) -> None:
+        # §2.8: the header's `ver` is checked on every frame before the payload is
+        # interpreted, on both sides of the wire. A frame from another version is
+        # not a reply this session can read; a pending request is told so rather
+        # than left to time out.
+        if frame.ver != PROTO_VERSION:
+            if frame.type == int(FrameType.REPLY):
+                self._replies.put_nowait(_BAD_VERSION)
+            return
         if frame.type == int(FrameType.EVENT):
             if frame.verb != 0 or not frame.payload:
                 return
@@ -221,8 +233,8 @@ class FrameTransport:
         """
         data = bytes(payload)
         total = len(data)
-        digest = b"" if plan_hash is None else bytes(plan_hash)
-        if len(digest) not in (0, 16):
+        plan_hash_bytes = b"" if plan_hash is None else bytes(plan_hash)
+        if len(plan_hash_bytes) not in (0, 16):
             raise ValueError("plan_hash must be 16 bytes or None")
 
         async with self._control:
@@ -230,7 +242,7 @@ class FrameTransport:
             self._drain_replies()
 
             frame = await self._exchange(
-                verb, struct.pack("<BI", BULK_ANNOUNCE, total) + digest, self._request_timeout
+                verb, struct.pack("<BI", BULK_ANNOUNCE, total) + plan_hash_bytes, self._request_timeout
             )
             acked = self._ack_offset(frame, total)
             if on_progress is not None:
@@ -255,14 +267,14 @@ class FrameTransport:
                 offset = self._ack_offset(frame, total)
                 if offset < acked or offset > sent:
                     raise TransportUnavailable(
-                        f"the board ACK'd offset {offset} outside [acked={acked}, sent={sent}]"
+                        f"the device ACK'd offset {offset} outside [acked={acked}, sent={sent}]"
                     )
                 acked = offset
                 if on_progress is not None:
                     on_progress(acked, total)
 
             frame = await self._exchange(
-                verb, struct.pack("<BI", BULK_COMMIT, total) + digest, self._request_timeout
+                verb, struct.pack("<BI", BULK_COMMIT, total) + plan_hash_bytes, self._request_timeout
             )
             final = self._ack_offset(frame, total)
             if final != total:
@@ -273,21 +285,24 @@ class FrameTransport:
                 on_progress(total, total)
 
     async def events(self) -> AsyncIterator[Event]:
-        while not self._closing:
-            item = await self._events.get()
-            if item is _CLOSED:
-                continue  # a dead link is not the end of the event stream
+        """The `EVENT` stream. A dead link is not the end of it; `close()` is."""
+        async for item in self._stream(self._events):
             yield item
 
     async def log_lines(self) -> AsyncIterator[tuple[str, str]]:
         """`ESP_LOG` text demuxed out of the wire, as `(level, message)`."""
-        while not self._closing:
-            item = await self._logs.get()
-            if item is _CLOSED:
-                continue
+        async for item in self._stream(self._logs):
             yield item
 
     # ── internals ──────────────────────────────────────────────────────────
+
+    async def _stream(self, queue: asyncio.Queue) -> AsyncIterator:
+        """Drain a queue until `close()`; a `_CLOSED` mark is skipped, not yielded."""
+        while not self._closing:
+            item = await queue.get()
+            if item is _CLOSED:
+                continue
+            yield item
 
     def _drain_replies(self) -> None:
         """Drop stale replies. Safe because the caller holds the control lock."""
@@ -314,6 +329,11 @@ class FrameTransport:
                 raise self._failure if self._failure is not None else TransportUnavailable(
                     "the control link died while a request was outstanding"
                 )
+            if frame is _BAD_VERSION:
+                raise ProtocolError(
+                    f"a reply to {Verb(int(verb)).name} carried a protocol version this session "
+                    f"does not speak (expected {PROTO_VERSION})"
+                )
             if frame.verb == int(Verb.ERROR):
                 raise CommandError.from_bytes(frame.payload)
             if frame.verb == int(verb):
@@ -324,12 +344,10 @@ class FrameTransport:
     @staticmethod
     def _ack_offset(frame: Frame, total: int) -> int:
         if len(frame.payload) != 4:
-            raise TransportUnavailable(
-                f"a bulk ACK was {len(frame.payload)} bytes, expected 4"
-            )
+            raise ProtocolError(f"a bulk ACK was {len(frame.payload)} bytes, expected 4")
         offset = struct.unpack("<I", frame.payload)[0]
         if offset > total:
-            raise TransportUnavailable(f"the bulk ACK named offset {offset} beyond {total} bytes")
+            raise ProtocolError(f"the bulk ACK named offset {offset} beyond {total} bytes")
         return offset
 
     def _on_noise(self, segment: bytes) -> None:

@@ -27,8 +27,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fake_board import ACK_WINDOW, FakeBoard, pipe  # noqa: E402
 
-from container.ns2device import CommandError, ErrorCode, EventKind, Mode, Verb  # noqa: E402
+from container.ns2device import (  # noqa: E402
+    CommandError,
+    ErrorCode,
+    EventKind,
+    FrameType,
+    Mode,
+    ProtocolError,
+    Verb,
+)
 from container.ns2serial import FrameTransport, TransportUnavailable  # noqa: E402
+from container.ns2serial.framing import Frame  # noqa: E402
 
 
 class FrameTransportTest(unittest.IsolatedAsyncioTestCase):
@@ -126,6 +135,14 @@ class FrameTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await asyncio.wait_for(anext(stream), 1.0), ("info", "wifi: connected"))
         self.assertEqual(await asyncio.wait_for(anext(stream), 1.0), ("error", "gap: boom"))
         await stream.aclose()
+
+    async def test_a_reply_with_a_foreign_protocol_version_is_a_protocol_error(self):
+        io, board = await self.make_pair()
+        board._status = lambda frame: board._send(
+            Frame(2, int(FrameType.REPLY), int(Verb.STATUS), bytes(47))
+        )
+        with self.assertRaises(ProtocolError):
+            await io.request(Verb.STATUS)
 
     async def test_a_dead_link_wakes_a_pending_request(self):
         io, board = await self.make_pair()

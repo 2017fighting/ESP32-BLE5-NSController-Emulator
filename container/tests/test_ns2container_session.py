@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import struct
 import sys
 import tempfile
 import unittest
@@ -24,7 +25,7 @@ import support  # noqa: E402
 from fake_board import FakeBoard, pipe  # noqa: E402
 
 from container.ns2container import ControllerError, Settings, create_controller  # noqa: E402
-from container.ns2device import SessionDevice, StubDevice  # noqa: E402
+from container.ns2device import EventKind, SessionDevice, StubDevice  # noqa: E402
 from container.ns2sealing import KeyMaterial, SealedTag, identity_of  # noqa: E402
 from container.ns2serial import FrameTransport, PortBusy  # noqa: E402
 
@@ -121,6 +122,19 @@ class ControllerSessionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["mode"], "IDLE")
         self.assertIsNone(snapshot["plan"])
         self.assertEqual(snapshot["control"]["link"], "UP")
+
+    async def test_a_same_boot_id_boot_keeps_the_plan(self):
+        # §2.8: BOOT is a hint; whether state survives is the boot_id branch's call.
+        controller, board = await self.start_with_board()
+        await controller.start_macro("correction.json")
+        self.assertEqual(controller.snapshot()["mode"], "MACRO")
+        board.emit(EventKind.BOOT, struct.pack("<I", board.hello.boot_id))
+        self.assertTrue(
+            await self.wait_for(lambda: controller.snapshot()["recovery"] == "SAME_POWER")
+        )
+        snapshot = controller.snapshot()
+        self.assertIsNotNone(snapshot["plan"])
+        self.assertEqual(snapshot["mode"], "MACRO")
 
     async def test_a_held_port_is_surfaced_and_not_retried_through(self):
         busy = BusyDevice()

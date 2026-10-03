@@ -168,6 +168,17 @@ class CommandError(Exception):
         return f"ERROR {name} (detail={self.detail})" if self.detail else f"ERROR {name}"
 
 
+class ProtocolError(RuntimeError):
+    """A frame that arrived intact but is not the shape the spec fixes.
+
+    Distinct from `CommandError`: that is the device's own typed `ERROR` reply
+    (§2.5). This is a host-side reading — a `STATUS` that is not 47 bytes, a
+    bulk ACK that is not 4, a header `ver` that is not 1 — and the spec says to
+    surface it as a protocol error rather than pad, guess, or attribute it to
+    the device (§2.6, §2.8, §3.2).
+    """
+
+
 # ── HELLO ──────────────────────────────────────────────────────────────────
 
 _HELLO = struct.Struct("<B4BIHHIBH")
@@ -384,6 +395,7 @@ __all__ = [
     "PLAN_SLOTS",
     "PROTO_VERSION",
     "PlanState",
+    "ProtocolError",
     "STATUS_LENGTH",
     "Status",
     "StopReason",

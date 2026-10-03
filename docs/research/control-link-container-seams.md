@@ -26,13 +26,18 @@ Four modules, each a seam of §8.2, and nothing in the state model or the web se
 | `container/ns2device/session.py` | `SessionDevice` — the verbs. `HELLO`/`STATUS` fixed-width checks, `LOAD_PLAN` with the §5.6 echo comparison (`PlanHashMismatch`), `START`/`STOP`/`PLACE_AMIIBO`/`UNPLACE_AMIIBO`/`PAIR_UNPAIR`/`CONFIG`. |
 | `container/ns2container/state.py` | The Controller now owns reconnection: `HELLO` on every attach, the `boot_id` branch, a backoff connect loop that **never retries through a held port**, and device log lines forwarded to the Logs screen. |
 
-`create_controller()` now builds the real session by default; `StubDevice` stays for tests. 21
+`create_controller()` now builds the real session by default; `StubDevice` stays for tests. 32
 new offline tests drive `FrameTransport`/`SessionDevice` against a byte-level fake board, so
 both sides cross a real COBS/CRC encode and decode.
 
 **The line discipline is in the one place the spec fixes it** (`SerialPortTransport._deassert`,
 called in `open()` and at the top of `close()`), because the CH9102 wires DTR→GPIO0 and
 RTS→EN. Asserted, the board sits in reset and the port returns nothing forever.
+
+Both directions check the header `ver` before a payload is interpreted (§2.8), and a frame
+that arrives intact but is the wrong shape — a 46-byte `STATUS`, a 3-byte bulk ACK, a header
+`ver` of 2 — raises a typed `ProtocolError` rather than being padded or attributed to the
+device's own `ERROR` (§3.2).
 
 ## 2. The bench: what the wire settled
 
@@ -59,7 +64,8 @@ nor printable text).
 
 ### 2.2 The container drives `LOAD_PLAN`, `START` and `STOP`
 
-Through the `Controller`, with the golden fixture (`fixtures/plan/correction.json`, 793 B):
+Through the `Controller`, with the golden fixture (793 B; `docs/spec/05-plan-format.md:182`,
+`fixtures/plan/correction.json`):
 
 | Step | Snapshot |
 | --- | --- |
@@ -136,7 +142,7 @@ device, and the current behaviour is safe.
 
 | Step | Result |
 | --- | --- |
-| Offline suite, `python3 -m unittest discover -s container/tests -p 'test_*.py'` | **157 tests, OK** (21 new) |
+| Offline suite, `python3 -m unittest discover -s container/tests -p 'test_*.py'` | **159 tests, OK** (32 new) |
 | Repo ruff (`ruff check container/`) | **All checks passed** |
 | `HELLO`/`STATUS` on the wire | §2.1 — capability and status bytes exact, 20/20 polls |
 | `LOAD_PLAN` + `START` + `STOP` through the `Controller` | §2.2 — fixture hash echoed, `MACRO`, `CONTAINER_STOP`, plan retained |

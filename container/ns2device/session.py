@@ -30,6 +30,7 @@ from .model import (
     Event,
     Hello,
     PlanState,
+    ProtocolError,
     Status,
     Verb,
 )
@@ -38,7 +39,7 @@ _CONFIG = struct.Struct("<HB")
 
 
 class PlanHashMismatch(RuntimeError):
-    """The board echoed a plan identity other than the one it was sent (§5.6).
+    """The device echoed a plan identity other than the one it was sent (§5.6).
 
     Not a wire error: no `ERROR` code names it, because the device answered
     perfectly. It means container and device disagree about *which* bytes are
@@ -49,7 +50,7 @@ class PlanHashMismatch(RuntimeError):
         self.expected = bytes(expected)
         self.echoed = bytes(echoed)
         super().__init__(
-            f"the board echoed plan {self.echoed.hex()} but was sent {self.expected.hex()}"
+            f"the device echoed plan {self.echoed.hex()} but was sent {self.expected.hex()}"
         )
 
 
@@ -77,14 +78,21 @@ class SessionDevice:
     async def hello(self) -> Hello:
         payload = await self._io.request(Verb.HELLO, bytes([PROTO_VERSION]))
         if len(payload) != 20:
-            raise CommandError(ErrorCode.BAD_LENGTH, len(payload))
-        self._hello = Hello.from_bytes(payload)
-        return self._hello
+            raise ProtocolError(f"HELLO was {len(payload)} bytes, expected 20")
+        hello = Hello.from_bytes(payload)
+        if hello.proto_ver != PROTO_VERSION:
+            # §2.8: both the header `ver` and the payload's `proto_ver` must agree.
+            raise ProtocolError(
+                f"the device speaks protocol version {hello.proto_ver}, not {PROTO_VERSION}"
+            )
+        self._hello = hello
+        return hello
 
     async def status(self) -> Status:
         payload = await self._io.request(Verb.STATUS)
         if len(payload) != 47:
-            raise CommandError(ErrorCode.BAD_LENGTH, len(payload))
+            # §3.2: anything other than 47 bytes is a protocol error, never padded.
+            raise ProtocolError(f"STATUS was {len(payload)} bytes, expected 47")
         return Status.from_bytes(payload)
 
     async def load_plan(

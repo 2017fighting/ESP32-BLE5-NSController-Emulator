@@ -28,6 +28,7 @@ from container.ns2device import (  # noqa: E402
     ErrorCode,
     FEATURE_MACRO,
     PlanHashMismatch,
+    ProtocolError,
     SessionDevice,
     Verb,
 )
@@ -62,17 +63,14 @@ class SessionDeviceTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_hello_that_is_not_twenty_bytes_is_a_protocol_error(self):
         device, board = await self.make_session()
         board._hello = lambda frame: board._reply(Verb.HELLO, bytes(19))
-        with self.assertRaises(CommandError) as caught:
+        with self.assertRaises(ProtocolError):
             await device.hello()
-        self.assertEqual(caught.exception.code, ErrorCode.BAD_LENGTH)
-        self.assertEqual(caught.exception.detail, 19)
 
     async def test_a_status_that_is_not_forty_seven_bytes_is_a_protocol_error(self):
         device, board = await self.make_session()
         board._status = lambda frame: board._reply(Verb.STATUS, bytes(46))
-        with self.assertRaises(CommandError) as caught:
+        with self.assertRaises(ProtocolError):
             await device.status()
-        self.assertEqual(caught.exception.code, ErrorCode.BAD_LENGTH)
 
     async def test_load_plan_compares_the_echoed_hash(self):
         device, board = await self.make_session()

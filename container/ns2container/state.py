@@ -37,6 +37,7 @@ from ..ns2device import (
     Mode,
     PlanHashMismatch,
     PlanState,
+    ProtocolError,
     Status,
     StopReason,
     TagState,
@@ -465,12 +466,19 @@ class Controller:
             self._control_link = "DOWN"
             self.log("container", "warn", f"control: HELLO refused — {error}")
             return False
+        except ProtocolError as error:
+            self._control_link = "DOWN"
+            self.log("container", "error", f"control: the device answered HELLO wrong — {error}")
+            return False
         self._hello = hello
         self._held_by = None
         self._control_link = "UP"
         self._recovery = self._recovery_case(previous, hello)
         if self._recovery == "NEW_POWER":
             self._clear_device_truth()
+            self.log("container", "warn", "recovery: new power — plan and placement cleared; re-upload required")
+        elif self._recovery == "DIFFERENT_FIRMWARE":
+            self.log("container", "warn", "recovery: different firmware on the same power — capability-controlled")
         self._on_hello()
         return await self.refresh()
 
@@ -499,6 +507,10 @@ class Controller:
             self._held_by = None
             self._publish()
             raise ControllerError("NO_DEVICE", f"{label}: {unavailable}") from None
+        except ProtocolError as error:
+            self.log("container", "error", f"control: {label} read a malformed frame — {error}")
+            self._publish()
+            raise ControllerError("PROTOCOL_ERROR", str(error)) from None
 
     @staticmethod
     def _recovery_case(previous: Hello | None, current: Hello) -> str:
@@ -514,7 +526,7 @@ class Controller:
         try:
             self._status = await self.device.status()
             self._on_status()
-        except (TransportUnavailable, CommandError) as failure:
+        except (TransportUnavailable, CommandError, ProtocolError) as failure:
             self._control_link = "DOWN"
             self.log("container", "warn", f"control: status failed — {failure}")
             self._publish()
@@ -649,7 +661,7 @@ class Controller:
                 self._status = await self.device.status()
                 self._control_link = "UP"
                 self._on_status()
-            except (TransportUnavailable, CommandError) as failure:
+            except (TransportUnavailable, CommandError, ProtocolError) as failure:
                 if self._control_link == "UP":
                     self.log("container", "warn", f"control: status failed — {failure}")
                 self._control_link = "DOWN"
@@ -683,7 +695,7 @@ class Controller:
             self._publish()
 
     async def _log_loop(self) -> None:
-        """Forward the board's `ESP_LOG` lines to the Logs screen (§8.2, §8.7)."""
+        """Forward the device's `ESP_LOG` lines to the Logs screen (§8.2, §8.7)."""
         try:
             async for level, message in self.device.log_lines():
                 self.log("device", level, message)
@@ -722,12 +734,16 @@ class Controller:
     def _on_event(self, event: Event) -> None:
         if event.kind is EventKind.BOOT:
             boot_id = event.boot_id
-            self._recovery = "NEW_POWER"
-            self._committed_macro_id = None
-            self._committed_bytes = 0
-            self._placed_figure_id = None
-            self._placed_at = None
-            self.log("container", "warn", f"recovery: the board rebooted (boot_id={boot_id:08x}) — plan and placement cleared" if boot_id is not None else "recovery: the board rebooted — plan and placement cleared")
+            # §2.8: BOOT is a hint that the link needs a fresh `HELLO`; whether
+            # the plan and placement survive is the boot_id branch's call, taken
+            # in `_attempt_connect`, not this handler's.
+            self.log(
+                "container",
+                "warn",
+                f"recovery: the device reported a boot (boot_id={boot_id:08x})"
+                if boot_id is not None
+                else "recovery: the device reported a boot",
+            )
         elif event.kind is EventKind.MODE_CHANGED:
             mode = event.mode
             self.log("frame", "debug", f"EVT  MODE_CHANGED   mode={mode.name if mode else '?'}")
