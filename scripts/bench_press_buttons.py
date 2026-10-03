@@ -207,9 +207,12 @@ async def main() -> int:
     async def tee_logs() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             async for name, payload in controller.subscribe():
-                message = payload["message"]
-                if name == "log" and ("console nfc:" in message or "nfc byte:" in message):
-                    log(f"  device: {message}")
+                # The stream also yields ("state", …) events, which carry no
+                # "message" key — the name is checked before the key is read.
+                if name == "log" and (
+                    "console nfc:" in payload["message"] or "nfc byte:" in payload["message"]
+                ):
+                    log(f"  device: {payload['message']}")
 
     tee = asyncio.create_task(tee_logs())
 
