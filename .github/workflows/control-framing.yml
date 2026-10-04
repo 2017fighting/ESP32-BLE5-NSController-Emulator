@@ -10,9 +10,9 @@ name: control framing
 # refused rather than replayed, that the panic stop stops on the press edge yet
 # only forgets on a long press's release, that the loop-boundary neutral is
 # committed before the pass restarts and that a short macro cannot saturate the
-# link with LOOP_COMPLETED, and that a placed tag is served page by page with the
-# tag-absent gap on every tag change — none of which can be re-checked by eye on
-# the bench.
+# link with LOOP_COMPLETED, and that a placed tag is served in the capture's own
+# read shapes with the tag-absent gap on every tag change — none of which can be
+# re-checked by eye on the bench.
 
 on:
   push:
@@ -74,31 +74,21 @@ jobs:
               -o "$RUNNER_TEMP/test_nfc_tag" test/host/test_nfc_tag.c \
               main/src/controller/nfc_tag.c
             "$RUNNER_TEMP/test_nfc_tag"
-            # #36: the same suite again with §6.6's bench knob set — the wire
-            # base a bench build can flip — asserting the mapped slice while
-            # the plain suite above stays the spec's default.
-            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_READ_WIRE_BASE=0x3cu \
-              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_wire" \
+            # #46: the same suite under the comparison compile — the superseded
+            # plain-offset view, kept so a bench build can compare the two shapes
+            # in one reflash (spec §6.6). The default above is the capture's.
+            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_READ_PLAIN_VIEW=1 \
+              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_plain" \
               test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
-            "$RUNNER_TEMP/test_nfc_tag_wire"
-            # #37's register-screen session added two more view knobs with
-            # their own gated assertions (docs/research/register-screen-bench.md
-            # §4): the zero pad beyond the image and the P1-prefix framing view.
-            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_READ_PAD_TO=0x300u \
-              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_pad" \
+            "$RUNNER_TEMP/test_nfc_tag_plain"
+            # #36's bench-only paths still have to compile: the unsolicited push
+            # and the report byte that follows the reader, both of which now
+            # serve the 600-byte space.
+            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_PUSH_READ_DATA=1 \
+              -DNFC_TAG_BYTE_FOLLOWS_POLLING=1 \
+              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_push" \
               test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
-            "$RUNNER_TEMP/test_nfc_tag_pad"
-            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_BUFFER_P1_PREFIX=1 \
-              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_p1" \
-              test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
-            "$RUNNER_TEMP/test_nfc_tag_p1"
-            # The two view knobs are legal together (the #37 review pinned the
-            # pad-past-the-P1-space behaviour), so CI compiles the pair too.
-            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_BUFFER_P1_PREFIX=1 \
-              -DNFC_TAG_READ_PAD_TO=0x300u \
-              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_p1_pad" \
-              test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
-            "$RUNNER_TEMP/test_nfc_tag_p1_pad"
+            "$RUNNER_TEMP/test_nfc_tag_push"
             cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_STATUS_DONE_WHEN_READ=1 \
               -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_done" \
               test/host/test_nfc_tag.c main/src/controller/nfc_tag.c

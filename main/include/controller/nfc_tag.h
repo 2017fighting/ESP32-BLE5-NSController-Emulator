@@ -39,17 +39,20 @@
  * the vocabulary and never on the wire (a placed tag is the only `AMIIBO` state,
  * so the byte is `0x00` or `0x02` and nothing between).
  *
- * **The capture's read shapes are known and this module still serves the
- * superseded ones** — a firmware defect, not a design choice (spec §6.6, gap
- * G-19). The `0x15` answer's three-byte head is `last` u8 · `len` u16 (LE), not
- * the offset echo below; one chunk is 70 bytes; and the request's offset is into
- * a `[60 B framing][540 B image]` space, so `image = wire − 0x3C`
- * (`switch2_controller_research/commands.md:68` — the request's own `46 00` is
- * the 70 bytes already consumed). What this module does today:
+ * **The served shapes are the capture's (§6.6, #46).** The `0x15` answer's
+ * three-byte head is `last` u8 · `len` u16 (LE); one chunk is 70 bytes; and the
+ * request's offset addresses a `[60 B framing][540 B image]` space, so
+ * `image = wire − 0x3C` (`switch2_controller_research/commands.md:68` — the
+ * request's own `46 00` is the 70 bytes already consumed). The framing head is
+ * built per placement and per `0x06`: the placed UID at `8`, the 32-byte
+ * constant both captures carry at `19`, and the request's own nine bytes echoed
+ * at `51`:
  *
  *     0x15 request   offset u16 (LE)
- *     0x15 response  0x00 · offset u16 (LE) · up to 64 bytes of the image
- *     0x14 request   offset u16 (LE) · len u16 (LE) · len bytes
+ *     0x15 response  last u8 · len u16 (LE) · len bytes of the space, ≤ 70
+ *     0x06 request   d0 07 · UID(7) · 01 · the page ranges (its [10..18] rides the head)
+ *     0x14 request   offset u16 (LE) · len u16 (LE) · len bytes  → the staging stream
+ *     0x08            commit the stream: its records → the volatile image, status 0x05
  */
 
 #include <stdbool.h>
@@ -64,30 +67,34 @@ extern "C" {
 #define NFC_TAG_SIZE 540u
 
 /* §7.7/§7.4: the capture's `0x15` response is 8 + 3 + 70 = 81 bytes on the wire
- * and carries 70 bytes over a 600-byte served space (`image = wire − 0x3C`), so
- * the whole read is still 9 round trips (§6.6). This constant is the superseded
- * 64 — the shipped build's chunk — kept until G-19's fix lands so the host suite
- * and the bench builds keep their meaning. */
-#define NFC_TAG_READ_CHUNK 64u
+ * and carries 70 bytes, so the whole 600-byte read is nine round trips (§6.6). */
+#define NFC_TAG_READ_CHUNK 70u
 
-/* §6.6's offset mapping, settled by arithmetic rather than a capture session:
- * the canonical capture reads at wire offset `0x46` the bytes that sit at
- * tag-image offset `0x0A` — the corpus's own page 2 carries `0F E0`, so the
- * capture's leading `0f e0` is the image verbatim and the earlier "first 16-bit
- * word transposed" reading was wrong — a constant 60 = `0x3C`, which is exactly
- * the framing head's own length: the wire space *is* the 600-byte read buffer.
- *
- * The default is still **plain** (`0`), which is G-19's defect to flip: the
- * console's wire offset should be read as `wire − 0x3C` into the image, with the
- * first 60 wire bytes serving the framing head. The knob stays so a bench build
- * can still compare the two views in one reflash.
- *
- * Reads (`0x15`) only. The one captured write (`0x14` at wire `0x0000`) fits no
- * offset shift — its payload opens on the write counter, not the image — so
- * writes stay plain until a capture says otherwise. */
-#ifndef NFC_TAG_READ_WIRE_BASE
-#define NFC_TAG_READ_WIRE_BASE 0u
+/* The chunk head's own length: `last` u8 · `len` u16 (LE). */
+#define NFC_TAG_READ_HEAD_SIZE 3u
+
+/* §6.6: the framing head — the UID, the 32-byte constant and the echoed request
+ * — and the space it opens onto the image. */
+#define NFC_TAG_FRAME_SIZE 60u
+
+/* The comparison compile (spec §6.6, #46): the superseded plain-offset view —
+ * the image at wire 0 in a 540-byte space, no framing head. Off by default; a
+ * bench build flips it to compare the two shapes in one reflash, and it is a
+ * comparison, not a candidate. */
+#ifndef NFC_TAG_READ_PLAIN_VIEW
+#define NFC_TAG_READ_PLAIN_VIEW 0
 #endif
+#if NFC_TAG_READ_PLAIN_VIEW
+#define NFC_TAG_SERVED_SIZE NFC_TAG_SIZE
+#else
+#define NFC_TAG_SERVED_SIZE (NFC_TAG_FRAME_SIZE + NFC_TAG_SIZE)
+#endif
+
+/* §6.6: the framing head echoes the `0x06` request's own `payload[10..18]` at the
+ * head's `[51..59]` — the nine bytes of the canonical read request (`01 03` and
+ * its three page ranges). */
+#define NFC_TAG_READ_OP_OFFSET 10u
+#define NFC_TAG_READ_OP_SIZE 9u
 
 /* The #39 game-surface bench's one firmware question (#36's record §4): does
  * the console's read flow require the report byte to follow the *reader's*
@@ -133,7 +140,7 @@ extern "C" {
  * a device-initiated notification, and pushing the whole tag as `0x15`-shaped
  * notifications is what unlocked its own `0x15` pulls, the first ever
  * observed. The push opens with the read-done status (`NFC_TAG_READ_DONE_
- * STATE`) and follows with 64-byte chunks at plain served offsets; the
+ * STATE`) and follows with 70-byte chunks of the served space; the
  * *closing*-trailer order is the one that crashed the console twice
  * (`2011-0301`, G-18), so the tree builds the safe order. A status-only push
  * variant existed and was falsified — the console drops unsolicited sub-0x05
@@ -142,46 +149,6 @@ extern "C" {
  * take the normal response path. */
 #ifndef NFC_TAG_PUSH_READ_DATA
 #define NFC_TAG_PUSH_READ_DATA 0
-#endif
-
-/* The served-space pad (register-screen session, cycle 2): once pulling, the
- * console samples 64-aligned offsets across a space larger than the image —
- * asks at 0x240/0x280/0x2c0 were observed against the 540-byte tag — and an
- * out-of-range ask currently answers *nothing*, which aborts the cycle. This
- * knob pads the served space to `NFC_TAG_READ_PAD_TO` bytes, image verbatim at
- * offset 0 and zeros beyond, so every in-space ask gets a well-formed chunk.
- * Default 0 (the spec's plain 540-byte space). **Not the crash discriminator
- * (register-screen-bench.md §7.2):** the console's third probe (`0x2c0`) read zeros
- * with the pad and nothing without it, and the console crashed in the padded run all
- * the same — but every no-crash config since that record's §1, take 7, has carried
- * the pad. */
-#ifndef NFC_TAG_READ_PAD_TO
-#define NFC_TAG_READ_PAD_TO 0
-#endif
-#if NFC_TAG_READ_PAD_TO != 0 && NFC_TAG_READ_PAD_TO <= NFC_TAG_SIZE
-#error "NFC_TAG_READ_PAD_TO must exceed the image size or be 0"
-#endif
-
-/* The P1-prefix buffer view (register-screen session, cycle 5 — the session's
- * synthesis): the console's `0x15` pull at wire 0x0000 follows our `04` status
- * answer within 30 ms, and the canonical capture's wire 0x46 maps to image
- * 0x0A — a constant 0x3C=60-byte shift. The NS1 P1 packet's framing minus its
- * UID field is exactly 60 bytes (15 header + 4 zeros + 32 magic + 9 echoed
- * page-ranges), so the served space becomes [60 B framing][540 B image] and
- * the image starts at wire 0x3C. Default OFF: the plain image-at-0 view.
- * **Crash-correlated (G-18):** both P1-prefix builds to run crashed the console
- * (`2011-0301`) — `register-screen-bench.md` §1 take 12 (late) and §7.1 run A —
- * against no-crash image-at-0 siblings; the framing's magic/range bytes are hardcoded
- * NS1 capture data and stay that record's §3, suspect 2, until a real-controller
- * capture says what belongs there. */
-#ifndef NFC_TAG_BUFFER_P1_PREFIX
-#define NFC_TAG_BUFFER_P1_PREFIX 0
-#endif
-#if NFC_TAG_BUFFER_P1_PREFIX != 0
-#define NFC_TAG_P1_PREFIX_SIZE 60u
-#define NFC_TAG_SERVED_SIZE (NFC_TAG_P1_PREFIX_SIZE + NFC_TAG_SIZE)
-#else
-#define NFC_TAG_SERVED_SIZE NFC_TAG_SIZE
 #endif
 
 /* The `0x05` answer's lifecycle (register-screen session, cycle 4): the console
@@ -266,9 +233,29 @@ enum {
     NFC_STATE_TAG_DETECTED = 2, /* a tag is placed and answering */
 };
 
-/* §3.3's `0x05` first byte: `0x09` = tag detected, `0x00` = no tag. */
+/* §3.3's `0x05` first byte: `0x09` = tag detected, `0x00` = no tag, `0x05` = a
+ * write was committed and the console has not ended the scan yet. */
 #define NFC_STATUS_TAG_DETECTED 0x09u
 #define NFC_STATUS_NO_TAG 0x00u
+#define NFC_STATUS_WRITE_COMMITTED 0x05u
+
+/* §6.6's G-17 frame: the `0x14` chunks fill a 454-byte staging stream (the
+ * capture's `4c 00` = 76, six chunks), and `0x08` commits it. Coverage is a
+ * bitmap over the same bytes, so a partial stream can never commit. */
+#define NFC_TAG_WRITE_STAGING_SIZE 454u
+#define NFC_TAG_WRITE_COVERAGE_BYTES ((NFC_TAG_WRITE_STAGING_SIZE + 7u) / 8u)
+/* The bitmap's last byte carries padding bits no stream byte can set, so
+ * coverage is complete when every byte is full but that one's tail. */
+#define NFC_TAG_WRITE_COVERAGE_TAIL_MASK ((uint8_t)((1u << (NFC_TAG_WRITE_STAGING_SIZE % 8u)) - 1u))
+#define NFC_TAG_WRITE_HEADER_OFFSET 17u /* 4 bytes → image[16..19] */
+#define NFC_TAG_WRITE_HEADER_TARGET 16u
+#define NFC_TAG_WRITE_RECORD_COUNT_OFFSET 21u
+#define NFC_TAG_WRITE_MAX_RECORDS 16u
+/* Pages 0–3 are the identity, the lock bytes and the capability container, so no
+ * record may target them. Page 4 is legal: it is the page the frame's own header
+ * word writes, and a record aimed there lands **after** it (the commit writes the
+ * header first), which is the order the reference implementation applies too. */
+#define NFC_TAG_WRITE_FIRST_PAGE_OFFSET 16u
 
 /* §2's command `0x01` subcommands this server answers. `0x0C` (the PN7160
  * capability probe) stays with `ns2_codec.c` — it is a constant, not state. */
@@ -277,6 +264,7 @@ enum {
     NFC_CMD_STOP_POLLING = 0x04,
     NFC_CMD_GET_STATUS = 0x05,
     NFC_CMD_READ_DEVICE = 0x06,
+    NFC_CMD_COMMIT_WRITE = 0x08,
     NFC_CMD_WRITE_BUFFER = 0x14,
     NFC_CMD_READ_BUFFER = 0x15,
 };
@@ -297,6 +285,19 @@ typedef struct {
 
 typedef struct {
     uint8_t tag[NFC_TAG_SIZE];
+    /* The `0x06` request's own `payload[10..18]`, echoed by the framing head's
+     * `[51..59]`. Cleared on placement and on a new scan, so a stale echo can
+     * never ride into the next tag (§6.6). */
+    uint8_t read_req_echo[NFC_TAG_READ_OP_SIZE];
+    /* §6.6's G-17 frame: the `0x14` staging stream and its coverage bitmap, plus
+     * whether a stream is in flight and whether `0x08` committed it. One noun —
+     * the write transaction — which is why the four travel together. */
+    struct {
+        uint8_t stream[NFC_TAG_WRITE_STAGING_SIZE];
+        uint8_t coverage[NFC_TAG_WRITE_COVERAGE_BYTES];
+        bool active;
+        bool committed;
+    } write;
     bool placed;     /* the tag is answering reads */
 #if NFC_TAG_STATUS_DONE_WHEN_READ
     bool read_done;  /* the armed read has been served: `0x05` answers 04 */

@@ -77,15 +77,15 @@ discipline ADR-0006 implies: the framing knows about the noise, the transport do
    (§3.3).
 6. **The NFC state machine and tag server** — **done with #25.** `main/src/controller/
    nfc_tag.c` drives HID report `0x09` byte `0x0C` (§4.9, now `nfc_state`) and answers
-   `0x01/0x03`, `0x01/0x04`, `0x01/0x05`, `0x01/0x06`, `0x01/0x14`, `0x01/0x15`. The device is a
-   byte server: it slices a RAM buffer and does no crypto (ADR-0011) — 60 bytes of framing plus
-   the 540-byte image, served 70 bytes at a time (§6.6, §7.7; the shipped build still slices
-   540 from offset 0 in 64-byte chunks and is G-19's defect). The module is portable C, so the
-   placement/unplacement/gap ordering and the page-wise slice are asserted on the host
+   `0x01/0x03`, `0x01/0x04`, `0x01/0x05`, `0x01/0x06`, `0x01/0x08`, `0x01/0x14`, `0x01/0x15`.
+   The device is a byte server: it slices a RAM buffer and does no crypto (ADR-0011) — 60 bytes
+   of framing plus the 540-byte image, served 70 bytes at a time, with the `0x14` stream staged
+   and `0x08` committing it (§6.6, §7.7, #46/#47). The module is portable C, so the
+   placement/unplacement/gap ordering and the served-space slice are asserted on the host
    (`test/host/test_nfc_tag.c`); `control_parser.c` owns the singleton, the report write and the
    `SCAN_ENDED` event, and `ns2_codec.c` routes the subcommands. The console-facing offset space
-   of `0x14`/`0x15` is now the arithmetic of §6.6 (`image = wire − 0x3C`); only its out-of-range
-   case is still validation 5's question.
+   of `0x14`/`0x15` is the arithmetic of §6.6 (`image = wire − 0x3C`), and the device serves it
+   as of #46; only its out-of-range case is still validation 5's question.
 7. **`CONFIG`**: `report_interval_ms` and `led`, volatile, applied at the boundary §2.9 fixes.
 8. **The Direction byte is already handled — no decision is left here.** `cmd_process()` flips
    response byte 1 from `0x91` to `0x01` centrally (`main/src/ns2_codec.c:656-658`), for

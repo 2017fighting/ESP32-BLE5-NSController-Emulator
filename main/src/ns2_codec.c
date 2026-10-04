@@ -212,8 +212,10 @@ g_cmd_handler_entry_t* g_cmd_handlers = NULL;
  * @brief NFC cmd handler
  *
  * `0x0C` is the PN7160 capability probe and stays a constant here (§6.6). Every
- * other subcommand is the tag server of #25: `0x03`/`0x04`/`0x05`/`0x06`/`0x14`/
- * `0x15` are served by `control_nfc_command()` against the placed 540-byte tag.
+ * other subcommand is the tag server of #25: `0x03`/`0x04`/`0x05`/`0x06`/`0x08`/
+ * `0x14`/`0x15` are served by `control_nfc_command()` against the placed tag —
+ * read out of the 600-byte `[60 B framing][540 B image]` space in 70-byte chunks
+ * and written into a 454-byte staging stream that `0x08` commits (§6.6, #46/#47).
  * The response Direction byte is not this handler's business: `cmd_process()`
  * rewrites header byte 1 to `0x01` for every command it dispatches (§7.3 step 8).
  */
