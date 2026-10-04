@@ -113,6 +113,39 @@ docker compose -f container/compose.yaml -f container/compose.macos.yaml up
 
 Either way the container sees `/dev/ttyACM0`.
 
+**One command on the bench host.** `scripts/start_container.py` does those steps in order — it
+resolves the node with `find_serial_port.py` (§10.7), runs the preflight below against this file's
+own `volumes:` list, and only then `up -d --build` — and it finishes by reading `/api/state` back.
+The compose line stays the documented default: the wrapper is a shell around it, not a second
+deployment path, and it manages the same project and the same container.
+
+```sh
+python3 scripts/start_container.py              # preflight, build, up -d, report the state
+python3 scripts/start_container.py --no-build   # reuse the image that is already there
+python3 scripts/start_container.py --dry-run    # print what it would do, and stop
+python3 scripts/start_container.py --no-device  # run with no device: the control link stays down
+python3 scripts/start_container.py --stop       # §10.2's down, with the project pinned
+```
+
+It exports the two variables this chapter documents rather than generating mounts of its own:
+`REFERENCE_ROOT` for the corpus (`--reference-root` sets it for one run), and `NS2_IMAGE` when
+`--image` pins a bench tag. The only file it generates is a `devices:`-only override, and only
+where the committed files cannot say the right thing — `--no-device`, or a Linux host whose device
+is not at `/dev/ttyACM0`. The image and the three mounts are never restated, because they are this
+file's own substitutions.
+
+**It reports, and what it calls "up".** The report is the connection screen's own four facts, read
+back from the API: the control link, the firmware, the console, and the library with its key
+verdict. Serving is not the same as talking, so the run is finished only when the device has also
+answered on the control link; a container that serves while the link never comes up exits 4 with
+the state printed, and the two causes §10.2 and §10.3 name — a second holder of the port, or the
+wrong node — are what its message points at. `--no-device` is the one run where there is no link
+to expect, and there `control DOWN` is the result rather than a failure.
+
+Rebuilding is the default because a stale image does not look stale: measured on this host, a
+28-hour-old image started at 921600, reported `KEY_UNVERIFIED` and read `HELLO` as `fw 1.0.0`,
+none of which `HEAD` does.
+
 ```yaml
 services:
   controller:
@@ -149,7 +182,8 @@ be, inside the container and on the host alike. So a wrong root costs twice: `Ke
 they *did* mount; and the directory Docker creates lands inside the pinned clone of
 `docs/references.md`, which stops that clone matching its pin. Compose does not catch it either —
 `${…}` is interpolated at parse time and the `:-` form substitutes rather than fails, so a
-set-but-wrong `REFERENCE_ROOT` is just as silent. Check the three sources resolve before `up`:
+set-but-wrong `REFERENCE_ROOT` is just as silent. Check the three sources resolve before `up` — the wrapper's preflight is exactly this check, run
+for you:
 
 ```sh
 root="${REFERENCE_ROOT:-$HOME/clone}"
@@ -294,7 +328,9 @@ That is better than a topology-derived name — it survives moving the board to 
 but it makes a `usbmodem*` glob ambiguous on a host that has two, so the node is resolved by
 serial number, never guessed. `scripts/find_serial_port.py` is the resolver: it reads the USB
 Serial Number out of `ioreg`, matches it against the nodes that exist, and **fails loudly** on
-zero matches (exit 2) and on more than one (exit 3) rather than picking one.
+zero matches (exit 2) and on more than one (exit 3) rather than picking one. The macOS run in
+§10.4 has the wrapper call it with `--json` and export the node it printed as `$NS2_PORT`, so the
+wrapper and the exported line above resolve the port the same way and neither globs.
 
 **No WCH driver is required.** Apple's `com.apple.iokit.IOSerialFamily` claims the bridge as
 `/dev/cu.usbmodem*`, and the whole flash path runs on it: stub upload, baud change to 460800,

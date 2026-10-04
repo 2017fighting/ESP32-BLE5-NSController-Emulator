@@ -1,6 +1,7 @@
 # The repo's lint contract: `ruff check container/` (Stage 0's drift guard,
 # spec §5.7) and the `ruff check container/ scripts/` that the bench notes
-# record as clean both resolve to this file.
+# record as clean both resolve to this file. CI runs the wider of the two
+# (`plan-fixture.yml`), so the contract and the gate are one command.
 #
 # Why it exists: ruff 0.16.0 (2026-07-23) replaced its default rule set — 59
 # rules became 413, and 18 of the old ones (E401, E402, E711, …) were dropped

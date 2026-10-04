@@ -31,8 +31,8 @@ jobs:
       - name: Install container dependencies
         run: pip install -r container/requirements.txt ruff==0.16.10
 
-      - name: Python — lint the container
-        run: ruff check container/
+      - name: Python — lint the container and the host scripts
+        run: ruff check container/ scripts/
 
       - name: Materialise the pinned reference macro library
         run: |
@@ -49,6 +49,12 @@ jobs:
 
       - name: Python — compiler, cache and golden fixture
         run: python3 -m unittest discover -s container/tests -p 'test_*.py' -v
+
+      # The host-side scripts have their own hermetic suite (the port resolver's
+      # ioreg parsing, the container bring-up's preflight and planning): no
+      # corpus, no Docker, no board.
+      - name: Python — the host scripts
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
       - name: C — host-side plan fixture and struct static_asserts
         run: |
