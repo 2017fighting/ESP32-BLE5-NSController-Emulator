@@ -236,6 +236,11 @@ and they are firmware changes rather than protocol changes:
   bench knobs for all of it are in the tree, the feature toggles default OFF and the value
   knobs default to the safe shapes
   (`nfc_tag.h`: `NFC_TAG_PUSH_READ_DATA` (status-first — the safe order), `NFC_TAG_STATUS_DONE_WHEN_READ`,
+  `NFC_TAG_STATUS_DONE_ONCE` (which refines the knob before it, the pair refusing to compile apart:
+  the done state served as an *edge* rather than a level — `04` once, then the tag-detected answer.
+  Every reference sends its `04` once per read, so the repeated one is half of G-18's crash
+  conjunction; this is the one prepared, unrun variable of [Bench: the read's continuation — what
+  does the console need after the first `0x15` pull?](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/45)),
   `NFC_TAG_READ_DONE_BYTE/MS` (`MS` defaults to the pulse; the hold is the falsified variant), `NFC_TAG_READ_PAD_TO`,
   `NFC_TAG_BUFFER_P1_PREFIX` — the last
   serves `[60 B P1 framing][image]`, the layout the canonical `0x46`→image-`0x0A` shift

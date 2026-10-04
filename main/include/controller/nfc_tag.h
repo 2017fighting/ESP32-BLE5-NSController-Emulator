@@ -191,6 +191,32 @@ extern "C" {
 #define NFC_TAG_STATUS_DONE_WHEN_READ 0
 #endif
 
+/* Whether that done answer is a **level** or an **edge** (#45's Route 1 — the
+ * read's continuation).
+ *
+ * The knob above answers `04` to *every* ask until the console's next `0x03`.
+ * Every reference serves it as an edge: in `poohl_joycontrol`'s
+ * `joycontrol/mcu.py` a read's `04` appears exactly once, in the P3 trailer
+ * after the pushed data, and the status answers carry `POLL`/`POLL_AGAIN`
+ * (`01`/`09`) and never `04` (the write flow's `04` is a counter-bounded
+ * transient). G-18's ledger points the same way — a completion signal that
+ * never resolves back to tag-in-field is the shape that crashes the console's
+ * amiibo module (`register-screen-bench.md` §7.2, where the pinned *byte* and
+ * the repeated `04` answer are the conjunction that killed it).
+ *
+ * ON: `04` once, then the normal tag-detected answer for the rest of the poll
+ * cycle. Default OFF, because the level is what takes 5–10 ran and this is the
+ * single variable a bench build flips. It refines the knob above rather than
+ * standing alone, and refuses to build without it instead of compiling into a
+ * silently inert configuration — a take has already been lost to an inherited
+ * flag (`register-screen-bench.md` §5). */
+#ifndef NFC_TAG_STATUS_DONE_ONCE
+#define NFC_TAG_STATUS_DONE_ONCE 0
+#endif
+#if NFC_TAG_STATUS_DONE_ONCE && !NFC_TAG_STATUS_DONE_WHEN_READ
+#error "NFC_TAG_STATUS_DONE_ONCE refines NFC_TAG_STATUS_DONE_WHEN_READ's lifecycle; define both"
+#endif
+
 /* How long the read-done byte is held before the byte returns to the tag-
  * present `0x02` (register-screen session, cycle 3): the NS1 lifecycle ends
  * its read at `04` only *between* the data phase and the return to `09`

@@ -228,6 +228,12 @@ static size_t nfc_reply_status(nfc_tag_t *nfc, uint8_t *out, size_t out_cap)
      * the read-done state — the NS1 P3 trailer, answered rather than pushed. */
     if (nfc->read_done) {
         out[0] = (uint8_t)NFC_TAG_READ_DONE_STATE;
+#if NFC_TAG_STATUS_DONE_ONCE
+        /* #45: the same signal as an edge — the reference sends its `04` once
+         * per read and its status answers never rest there, so the state is
+         * consumed by the ask that carried it. */
+        nfc->read_done = false;
+#endif
     }
 #endif
     memcpy(&out[1], nfc_status_flags, sizeof(nfc_status_flags));

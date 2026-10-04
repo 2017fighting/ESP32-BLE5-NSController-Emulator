@@ -103,6 +103,14 @@ jobs:
               -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_done" \
               test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
             "$RUNNER_TEMP/test_nfc_tag_done"
+            # #45's Route 1: the same answer as an edge rather than a level,
+            # which refines the knob above rather than standing alone (the
+            # header refuses the pair's halves by name).
+            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_STATUS_DONE_WHEN_READ=1 \
+              -DNFC_TAG_STATUS_DONE_ONCE=1 \
+              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_done_once" \
+              test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
+            "$RUNNER_TEMP/test_nfc_tag_done_once"
           done
 
       - name: C — the NFC console-traffic trace (#36)

@@ -307,6 +307,59 @@ static void test_status_flips_done_when_read(void)
     CHECK(out[0] == NFC_STATUS_TAG_DETECTED,
           "a fresh placement resets the done state");
 }
+
+#if NFC_TAG_STATUS_DONE_ONCE
+/* #45's Route 1: the done state as an *edge* rather than a level.
+ *
+ * The expected sequence comes from the NS1 lifecycle, not from this module
+ * (`poohl_joycontrol/joycontrol/mcu.py`): a read's `04` appears exactly once —
+ * the P3 trailer after the pushed data — and the status answers carry
+ * `POLL`/`POLL_AGAIN` (`01`/`09`), never `04`; the write flow's `04` is a
+ * counter-bounded transient. Answering `04` for every ask until the next `0x03`
+ * is a state the console's module never has to resolve, which is the shape
+ * G-18's crash ledger points at (`register-screen-bench.md` §7.2). */
+static void test_status_done_is_answered_once(void)
+{
+    nfc_tag_t nfc;
+    nfc_tag_init(&nfc);
+    uint8_t tag[NFC_TAG_SIZE];
+    build_tag(tag, 0x22);
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now++);
+
+    uint8_t out[NFC_STATUS_RESPONSE_SIZE];
+    size_t n = nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_STATUS_TAG_DETECTED,
+          "an unserved read answers tag-detected, got 0x%02x", out[0]);
+
+    nfc_tag_set_read_done(&nfc, true);
+    n = nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(n == NFC_STATUS_RESPONSE_SIZE && out[0] == NFC_TAG_READ_DONE_STATE,
+          "the first ask after the served read carries the done state");
+    CHECK(memcmp(&out[1], ((const uint8_t[]){0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x00}), 7) == 0,
+          "the done answer's flags are the unserved answer's flags");
+
+    n = nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(n == NFC_STATUS_RESPONSE_SIZE && out[0] == NFC_STATUS_TAG_DETECTED,
+          "the second ask in the same poll cycle is back to tag-detected, got 0x%02x", out[0]);
+    CHECK(out[8] == 0x07, "the tag-detected answer still declares its UID length");
+
+    /* One `04` per read, not one per placement: the console re-arms `0x03` every
+     * ~3.1 s on the register screen, and the served read that follows answers the
+     * done state again. */
+    nfc_tag_command(&nfc, NFC_CMD_START_POLLING, NULL, 0, out, sizeof(out));
+    nfc_tag_set_read_done(&nfc, true);
+    nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_TAG_READ_DONE_STATE,
+          "the next poll cycle's served read answers the done state again");
+
+    nfc_tag_unplace(&nfc);
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now++);
+    nfc_tag_set_read_done(&nfc, true);
+    nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_TAG_READ_DONE_STATE,
+          "a fresh placement's served read answers the done state again");
+}
+#endif
 #endif
 
 static void test_read_buffer_needs_a_tag(void)
@@ -628,6 +681,9 @@ int main(void)
     test_read_buffer_needs_a_tag();
 #if NFC_TAG_STATUS_DONE_WHEN_READ
     test_status_flips_done_when_read();
+#endif
+#if NFC_TAG_STATUS_DONE_ONCE
+    test_status_done_is_answered_once();
 #endif
 #if NFC_TAG_READ_WIRE_BASE != 0
     test_the_wire_base_maps_reads_only();
