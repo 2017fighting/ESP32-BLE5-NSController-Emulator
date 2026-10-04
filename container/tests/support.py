@@ -18,6 +18,16 @@ REFERENCE_AMIITOOL_PIN = "4fe80a1de5ae19e1a1a6a7faeca645dafd0189c3"
 #: §8.5 — the key is not a figure.
 REFERENCE_ESSENTIAL_DIR = "!Essential Files"
 
+#: Where each thing sits inside the corpus, relative to `$REFERENCE_ROOT`
+#: (`machine-prep.md` §6, the authority on the layout). Named once here so the
+#: deployment line and the tests name the corpus the same way (#43) — before it,
+#: `container/compose.yaml` mounted the key from `Amiibo/!Essential Files`, one
+#: directory above where the corpus keeps it.
+REFERENCE_MACRO_RELATIVE = Path("switch-controller-macro") / "宏"
+REFERENCE_AMIIBO_RELATIVE = Path("Amiibo")
+REFERENCE_AMIIBO_BIN_RELATIVE = REFERENCE_AMIIBO_RELATIVE / "Amiibo Bin"
+REFERENCE_KEY_RELATIVE = REFERENCE_AMIIBO_BIN_RELATIVE / REFERENCE_ESSENTIAL_DIR / "key_retail.bin"
+
 
 def reference_root() -> Path:
     return Path(os.environ.get("REFERENCE_ROOT") or os.path.expanduser("~/clone"))
@@ -25,7 +35,7 @@ def reference_root() -> Path:
 
 def reference_macro_dir() -> Path | None:
     """The pinned macro library, or ``None`` when the reference is absent."""
-    candidate = reference_root() / "switch-controller-macro" / "宏"
+    candidate = reference_root() / REFERENCE_MACRO_RELATIVE
     return candidate if candidate.is_dir() else None
 
 
@@ -36,16 +46,15 @@ def sealing_fixture(name: str) -> bytes:
 
 def reference_amiibo_dir() -> Path | None:
     """The pinned Amiibo clone's `.bin` tree, or ``None`` when it is absent."""
-    candidate = reference_root() / "Amiibo" / "Amiibo Bin"
+    candidate = reference_root() / REFERENCE_AMIIBO_BIN_RELATIVE
     return candidate if candidate.is_dir() else None
 
 
 def reference_key_file() -> Path | None:
     """The retail key inside the Amiibo clone, or ``None``: never vendored (§6.7)."""
-    directory = reference_amiibo_dir()
-    if directory is None:
+    if reference_amiibo_dir() is None:
         return None
-    candidate = directory / REFERENCE_ESSENTIAL_DIR / "key_retail.bin"
+    candidate = reference_root() / REFERENCE_KEY_RELATIVE
     return candidate if candidate.is_file() else None
 
 

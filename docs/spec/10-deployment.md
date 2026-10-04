@@ -123,13 +123,44 @@ services:
     devices:
       - /dev/ttyACM0:/dev/ttyACM0
     volumes:
-      - "$HOME/clone/switch-controller-macro/宏:/library/macros:ro"
-      - "$HOME/clone/Amiibo:/library/amiibo:ro"
-      - "$HOME/clone/Amiibo/!Essential Files/key_retail.bin:/keys/key_retail.bin:ro"
+      - "${REFERENCE_ROOT:-$HOME/clone}/switch-controller-macro/宏:/library/macros:ro"
+      - "${REFERENCE_ROOT:-$HOME/clone}/Amiibo:/library/amiibo:ro"
+      - "${REFERENCE_ROOT:-$HOME/clone}/Amiibo/Amiibo Bin/!Essential Files/key_retail.bin:/keys/key_retail.bin:ro"
     ports:
       - "8080:8080"
     restart: unless-stopped
 ```
+
+**The three mounts are one corpus root, and Compose does not check it.** Each is spelled from
+`${REFERENCE_ROOT:-$HOME/clone}` — the variable and default `docs/references.md` resolves
+(`$REFERENCE_ROOT/<alias>`) — so a host whose corpus is not under `~/clone` sets the variable and
+edits no file, and the Linux block and the macOS override deploy the same mounts. The layout is
+`machine-prep.md` §6's, and each mount names it: `/library/macros` reads
+`switch-controller-macro/宏`; `/library/amiibo` reads the `Amiibo` clone, which §8.5's index walks
+recursively and where `!Essential Files/` is skipped as not-a-figure; `/keys/key_retail.bin` reads
+`Amiibo/Amiibo Bin/!Essential Files/key_retail.bin`. **The key is inside the `Amiibo Bin/` tree,
+not beside it** — the spelling beside it was issue #43, and it did not fail, which is what the next
+paragraph is about. Only the *host* path moved: the container-side path stays
+`/keys/key_retail.bin`, fixed, with no environment variable (ADR-0012).
+
+**A missing bind source is not an error.** Docker creates a **directory** where the source should
+be, inside the container and on the host alike. So a wrong root costs twice: `KeyStore.read()`
+(§6.7) finds no file, reports `KEY_ABSENT`, and the startup line sends the operator to mount a key
+they *did* mount; and the directory Docker creates lands inside the pinned clone of
+`docs/references.md`, which stops that clone matching its pin. Compose does not catch it either —
+`${…}` is interpolated at parse time and the `:-` form substitutes rather than fails, so a
+set-but-wrong `REFERENCE_ROOT` is just as silent. Check the three sources resolve before `up`:
+
+```sh
+root="${REFERENCE_ROOT:-$HOME/clone}"
+for source in "switch-controller-macro/宏" "Amiibo" "Amiibo/Amiibo Bin/!Essential Files/key_retail.bin"; do
+  test -e "$root/$source" || { echo "missing mount source: $root/$source" >&2; exit 1; }
+done
+```
+
+The research record the block came from (`container-and-web-ui.md` §4) keeps the old
+`$HOME/clone` spelling and is **left as written**, for the same reason the image name below is:
+a research record is the evidence trail, not the specification (§00, Citations).
 
 **`image:` is a substitution, and its default is the published name.** With `NS2_IMAGE`
 unset the build tags `ghcr.io/2017fighting/ns2-controller:latest`, so a host that has never
@@ -151,9 +182,9 @@ written never reaches Docker. `<` and `>` are redirections to the shell, which s
 ```sh
 docker run --rm -it \
   --device=/dev/serial/by-id/usb-1a86_USB_Single_Serial_*-if00:/dev/ttyACM0 \
-  -v "$HOME/clone/switch-controller-macro/宏":/library/macros:ro \
-  -v "$HOME/clone/Amiibo":/library/amiibo:ro \
-  -v "$HOME/clone/Amiibo/!Essential Files/key_retail.bin":/keys/key_retail.bin:ro \
+  -v "${REFERENCE_ROOT:-$HOME/clone}/switch-controller-macro/宏":/library/macros:ro \
+  -v "${REFERENCE_ROOT:-$HOME/clone}/Amiibo":/library/amiibo:ro \
+  -v "${REFERENCE_ROOT:-$HOME/clone}/Amiibo/Amiibo Bin/!Essential Files/key_retail.bin":/keys/key_retail.bin:ro \
   -p 8080:8080 ghcr.io/<owner>/ns2-controller:latest
 ```
 
@@ -164,9 +195,9 @@ container still sees `/dev/ttyACM0` (§10.7):
 # NS2_PORT is the resolved macOS node, exported above
 docker run --rm -it \
   --device="$NS2_PORT:/dev/ttyACM0" \
-  -v "$HOME/clone/switch-controller-macro/宏":/library/macros:ro \
-  -v "$HOME/clone/Amiibo":/library/amiibo:ro \
-  -v "$HOME/clone/Amiibo/!Essential Files/key_retail.bin":/keys/key_retail.bin:ro \
+  -v "${REFERENCE_ROOT:-$HOME/clone}/switch-controller-macro/宏":/library/macros:ro \
+  -v "${REFERENCE_ROOT:-$HOME/clone}/Amiibo":/library/amiibo:ro \
+  -v "${REFERENCE_ROOT:-$HOME/clone}/Amiibo/Amiibo Bin/!Essential Files/key_retail.bin":/keys/key_retail.bin:ro \
   -p 8080:8080 ghcr.io/<owner>/ns2-controller:latest
 ```
 
@@ -176,7 +207,7 @@ The UI is then at `http://localhost:8080`.
 | --- | --- | --- |
 | `/library/macros` | yes | the macro library (`*.json`) |
 | `/library/amiibo` | yes | the figure library (`.bin` canonical) |
-| `/keys/key_retail.bin` | yes | the user's own retail key — one fixed path, no environment variable (ADR-0012) |
+| `/keys/key_retail.bin` | yes | the user's own retail key — fixed inside the container, no environment variable (ADR-0012); its host source is the corpus root's |
 | `--device` | — | the CH9102 port; never `--privileged` |
 
 **Host access is the host's problem, and it must be solved before the container runs.** Docker

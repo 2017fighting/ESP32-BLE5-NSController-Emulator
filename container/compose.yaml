@@ -22,6 +22,17 @@
 # The `<owner>` this line used to carry is not in Docker's reference character set, and
 # Compose hands `image:` to the builder as `-t`, so the build died before it started.
 #
+# The three mounts come from one corpus root, spelled `${REFERENCE_ROOT:-$HOME/clone}` — the
+# variable and default `docs/references.md` resolves (`$REFERENCE_ROOT/<alias>`), so a host
+# whose corpus is not under `~/clone` sets the variable and edits no file. The layout is
+# `machine-prep.md` §6's: the key is *inside* the `Amiibo Bin/` tree, not beside it (#43).
+#
+# Compose interpolates `${…}` at parse time and does not check the path; Docker does not fail
+# on a missing bind source either, it creates a **directory** there — on the host as well as in
+# the container. A wrong root is therefore silent: the container reports `KEY_ABSENT` for a key
+# that was mounted, and the directory lands inside the pinned reference clone. §10.4's preflight
+# checks the sources before `up`.
+#
 # The single port is passed through; never --privileged (§10.4).
 
 services:
@@ -33,9 +44,9 @@ services:
     devices:
       - /dev/ttyACM0:/dev/ttyACM0
     volumes:
-      - "$HOME/clone/switch-controller-macro/宏:/library/macros:ro"
-      - "$HOME/clone/Amiibo:/library/amiibo:ro"
-      - "$HOME/clone/Amiibo/!Essential Files/key_retail.bin:/keys/key_retail.bin:ro"
+      - "${REFERENCE_ROOT:-$HOME/clone}/switch-controller-macro/宏:/library/macros:ro"
+      - "${REFERENCE_ROOT:-$HOME/clone}/Amiibo:/library/amiibo:ro"
+      - "${REFERENCE_ROOT:-$HOME/clone}/Amiibo/Amiibo Bin/!Essential Files/key_retail.bin:/keys/key_retail.bin:ro"
     ports:
       - "8080:8080"
     restart: unless-stopped
