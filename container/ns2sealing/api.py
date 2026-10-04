@@ -412,14 +412,22 @@ class Sealer:
             self._plaintexts[cache_key] = cached
         return cached
 
-    def __call__(self, tag_image: bytes, key: KeyMaterial) -> SealedTag:
+    def __call__(
+        self, tag_image: bytes, key: KeyMaterial, *, identity: bytes | None = None
+    ) -> SealedTag:
         """The seam's signature (§8.2): a raw tag image and key in, a Tag and identity out.
 
         One identity per placement (§6.1), which is why this mints rather than
         reusing the cache's: the cache keeps the *source* tag's identity at
-        `0x1D4`, and replaying it is the failure mode §6.7 bans.
+        `0x1D4`, and replaying it is the failure mode §6.7 bans. `identity` pins
+        the seal to a given UID — the bench's continue-for-write re-presentation
+        (§6.6), never a production path (ADR-0011).
         """
-        return pack(self.plaintext(tag_image, key), key, identity=mint_identity())
+        return pack(
+            self.plaintext(tag_image, key),
+            key,
+            identity=mint_identity() if identity is None else identity,
+        )
 
 
 __all__ = [

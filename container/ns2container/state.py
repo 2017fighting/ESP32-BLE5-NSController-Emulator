@@ -23,8 +23,9 @@ import contextlib
 import logging
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Protocol
 
 from ..ns2device import (
     CommandError,
@@ -51,8 +52,15 @@ from .config import Settings
 from .library import AmiiboIndex, KeyState, KeyStatus, KeyStore, MacroEntry, MacroLibrary
 
 #: The sealing seam's shape (§8.2), injected so tests can substitute a double
-#: and the controller never depends on the sealer's implementation.
-SealingSeam = Callable[[bytes, KeyMaterial], SealedTag]
+#: and the controller never depends on the sealer's implementation. `identity`
+#: pins the seal to a given UID; a fixed identity is what the bench's
+#: "present the same amiibo again" step needs (§6.6, the reference's
+#: continue-for-write), and production always leaves it `None` so every
+#: placement mints a fresh one (ADR-0011).
+class SealingSeam(Protocol):
+    def __call__(
+        self, tag_image: bytes, key: KeyMaterial, *, identity: bytes | None = None
+    ) -> SealedTag: ...
 
 logger = logging.getLogger("ns2.container")
 logger.addHandler(logging.NullHandler())  # no lastResort noise until a host configures logging
@@ -391,7 +399,7 @@ class Controller:
         self.log("container", "info", "mode: stopped from the app")
         await self.refresh()
 
-    async def place_figure(self, figure_id: str) -> None:
+    async def place_figure(self, figure_id: str, *, identity: bytes | None = None) -> None:
         entry = self.figures.resolve(figure_id)
         if entry is None:
             raise ControllerError("UNKNOWN_FIGURE", f"No figure with id {figure_id!r} is indexed.")
@@ -415,7 +423,7 @@ class Controller:
                 f"console: not connected — {entry.name} is placed anyway and no scan will "
                 "reach it until the console connects (§9.3)",
             )
-        sealed = self._seal_figure(image)
+        sealed = self._seal_figure(image, identity=identity)
         if sealed is None:
             if self._key_status.state is KeyState.KEY_INVALID:
                 raise ControllerError(
@@ -615,7 +623,7 @@ class Controller:
                 "unfixed-info.bin + locked-secret.bin concatenated in that order.",
             )
 
-    def _seal_figure(self, image: bytes) -> SealedTag | None:
+    def _seal_figure(self, image: bytes, *, identity: bytes | None = None) -> SealedTag | None:
         """One sealing attempt — the shared core of placing and rotating.
 
         Returns `None` when sealing cannot happen, having already set
@@ -631,7 +639,7 @@ class Controller:
         if material is None:
             return None
         try:
-            sealed = self._sealer(image, material)
+            sealed = self._sealer(image, material, identity=identity)
         except (KeyInvalid, TagInvalid) as failure:
             if self._key_status.state is KeyState.KEY_UNVERIFIED:
                 self._key_status = KeyStatus(

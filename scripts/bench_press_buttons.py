@@ -8,8 +8,9 @@ inputs. This script compiles a one-shot press sequence into a plan, runs it once
 and stops (the stop commits the neutral, §4.6), leaving the console to react.
 
 The operator is the eyes: run one sequence, read the screen, run the next.
-Nothing here places a tag — that stays `bench_amiibo_read.py`'s job, so the
-placement window stays strict.
+The one-shot sequence mode never places a tag — placement is the resident mode's
+`place`/`place-same` (or `bench_amiibo_read.py`'s) — so the placement window
+stays strict.
 
 Item grammar: `item[:hold_ms[:gap_ms]]`, comma-separated, where an item is
 either `button[+button…]` or a stick `rstick:H,V` / `lstick:H,V` (axes −1..1).
@@ -31,6 +32,9 @@ the FIFO, one per line:
 
     press <seq>     run a press sequence (the grammar above)
     place           seal a fresh identity of --figure and place it
+    place-same      re-place the figure under the identity already placed — the
+                    console's "present the same amiibo again" placement (the
+                    reference's continue-for-write, §6.6)
     unplace         take the tag off the field
     status          one snapshot line
     sleep <s>       pause (pacing/watching)
@@ -291,6 +295,16 @@ async def main() -> int:
                     elif cmd == "place":
                         await controller.place_figure(figure_id)
                         log(f"  placed: {controller.snapshot().get('placement')}")
+                    elif cmd == "place-same":
+                        placed = controller.snapshot().get("placement") or {}
+                        identity = placed.get("identity")
+                        if not identity:
+                            log("  place-same: nothing placed yet")
+                        else:
+                            await controller.place_figure(
+                                figure_id, identity=bytes.fromhex(identity)
+                            )
+                            log(f"  re-placed same identity: {controller.snapshot().get('placement')}")
                     elif cmd == "unplace":
                         await controller.unplace()
                         log("  unplaced")

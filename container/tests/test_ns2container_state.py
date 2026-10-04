@@ -46,9 +46,9 @@ TAG = support.sealing_fixture("tag")
 KEY_BYTES = support.sealing_fixture("key")
 
 
-def fake_sealer(image: bytes, key: KeyMaterial) -> SealedTag:
+def fake_sealer(image: bytes, key: KeyMaterial, *, identity: bytes | None = None) -> SealedTag:
     """A test double, not a fallback: it copies the source image's identity."""
-    return SealedTag(image=image, identity=identity_of(image))
+    return SealedTag(image=image, identity=identity or identity_of(image))
 
 
 class RotatingSealer:
@@ -62,7 +62,10 @@ class RotatingSealer:
     def __init__(self) -> None:
         self.mints = 0
 
-    def __call__(self, image: bytes, key: KeyMaterial) -> SealedTag:
+    def __call__(self, image: bytes, key: KeyMaterial, *, identity: bytes | None = None) -> SealedTag:
+        if identity is not None:
+            block = identity[:3] + bytes([bcc0_for(identity)]) + identity[3:]
+            return SealedTag(image=block + image[8:], identity=identity)
         self.mints += 1
         identity = bytes([0x04]) + self.mints.to_bytes(6, "big")
         block = identity[:3] + bytes([bcc0_for(identity)]) + identity[3:]
@@ -76,10 +79,12 @@ class FlakySealer:
         self.inner = RotatingSealer()
         self.failed = False
 
-    def __call__(self, image: bytes, key: KeyMaterial) -> SealedTag:
+    def __call__(
+        self, image: bytes, key: KeyMaterial, *, identity: bytes | None = None
+    ) -> SealedTag:
         if self.failed:
             raise KeyInvalid("the round trip broke between placements")
-        return self.inner(image, key)
+        return self.inner(image, key, identity=identity)
 
 
 class CountingDevice(StubDevice):
@@ -233,6 +238,21 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["placement"]["index"], 1)
         await controller.unplace()
         self.assertEqual(controller.snapshot()["mode"], "IDLE")
+
+    async def test_a_fixed_identity_re_presents_the_same_tag(self):
+        # The bench's continue-for-write step (§6.6, the reference's
+        # `continue_for_write`) needs the *same* UID presented again, so
+        # `place_figure` can pin it instead of minting.
+        sealer = RotatingSealer()
+        controller = await self.start_controller(sealer=sealer)
+        await controller.place_figure("Zelda/Link.bin")
+        first = controller.snapshot()["placement"]["identity"]
+        self.assertEqual(sealer.mints, 1)
+        await controller.place_figure("Zelda/Link.bin", identity=bytes.fromhex(first))
+        snapshot = controller.snapshot()
+        self.assertEqual(snapshot["placement"]["identity"], first)
+        self.assertEqual(snapshot["placement"]["index"], 2)
+        self.assertEqual(sealer.mints, 1)  # the fixed identity is not a fresh mint
 
     async def test_placement_while_macro_is_refused_by_the_device(self):
         controller = await self.start_controller()
@@ -590,7 +610,9 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_key_that_fails_to_seal_sets_key_invalid(self):
         # An unverified key (no library tag at startup) is verified by the first
         # placement; a failure there is the key's, and the placement is refused.
-        def broken_sealer(image: bytes, key: KeyMaterial) -> SealedTag:
+        def broken_sealer(
+            image: bytes, key: KeyMaterial, *, identity: bytes | None = None
+        ) -> SealedTag:
             raise KeyInvalid("unpack round trip failed")
 
         settings = self.build_settings(with_figure=False)
@@ -610,7 +632,9 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_verified_key_blames_the_figure_not_the_key(self):
         # The three locks stay distinct (§8.6): a key that verified against the
         # library is not accused because one dump will not seal.
-        def broken_sealer(image: bytes, key: KeyMaterial) -> SealedTag:
+        def broken_sealer(
+            image: bytes, key: KeyMaterial, *, identity: bytes | None = None
+        ) -> SealedTag:
             raise KeyInvalid("this dump will not unpack")
 
         settings = self.build_settings()

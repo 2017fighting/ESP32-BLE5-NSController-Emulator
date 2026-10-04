@@ -278,13 +278,19 @@ and they are firmware changes rather than protocol changes:
   console's response parser correlates by subcommand). The silence is the observation; *"it
   waits on device pushes"* was the day's reading and is the weaker one now, since the answers
   the device gave it were the superseded shapes (the head, the 64-byte chunk and the
-  image-at-0 space above). The remaining gate is the
-  *continuation* — the console probes three offsets deterministically (`0x40`/`0x140`/`0x2c0`),
-  takes the `04`, and rides to its deadline; five frame combinations across two sessions
+  image-at-0 space above). **The gate's framing half is closed by the run (#45):** with the
+  corrected shapes the console pulled every chunk it asked for — eight sequential chunks from
+  wire `0x46` to `0x230`, no crash — and then re-prompted instead of advancing. The continuation
+  is the *re-presentation lifecycle* (the same identity placed again, the reference's
+  continue-for-write): that placement armed a read the console never pulled, and the
+  unsolicited whole-tag push was followed by the console's `2011-0301` force-reboot. **Six** frame
+  combinations across three sessions have now
   **crashed the console's amiibo module** (`2011-0301`, forced reboot — the ledger and its
-  isolated factors are G-18's, §12.3; the record is `register-screen-bench.md` §3, §7). The one
-  remaining bench knob is `NFC_TAG_PUSH_READ_DATA` (default OFF; status-first, the safe order —
-  the push now serves the status the lifecycle arms rather than overriding it). The knob family
+  isolated factors are G-18's, §12.3; the record is `register-screen-bench.md` §3, §7, §9). The bench
+  knobs are `NFC_TAG_PUSH_READ_DATA` (default OFF; status-first, the safe order —
+  the push now serves the status the lifecycle arms rather than overriding it) and, since the run,
+  `NFC_TAG_DEFER_READ_EJECT` (default OFF; the reference's re-presentation rule, whose same-UID take
+  crashed the console — §12.3 G-18). The knob family
   the sessions used to pace the answer and the byte is **gone**: `NFC_TAG_STATUS_DONE_WHEN_READ`
   and `NFC_TAG_STATUS_DONE_ONCE` are #48's landed lifecycle, `NFC_TAG_READ_DONE_BYTE`/`MS` are
   §4.9's event counter, and `NFC_TAG_READ_PAD_TO`/`NFC_TAG_BUFFER_P1_PREFIX` were already deleted
@@ -340,8 +346,9 @@ and they are firmware changes rather than protocol changes:
   PC2 read buffer (`ns_pc_control/server/src/s2_nfc_codec.cpp:158-199`, context tier). They are
   built as of #46 because no other source has them at all, and the NS1 P1 prefix the bench
   builds carried is **deleted**, not kept as an alternative: it was the wrong console's packet
-  header, never a candidate content. Whether the console accepts this head is still the bench's
-  question — nothing here has been served to a real reader yet ([Bench: the read's continuation](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/45)).
+  header, never a candidate content. **The bench has since served it** (#45): the console pulled
+  the whole 600-byte space on the register screen (`register-screen-bench.md` §9.1), so the head
+  is accepted — what the console does *after* a whole read is the open gate.
 - **Every console NFC exchange is traced, never logged inline.** `nfc_trace.h`/`.c` (portable,
   host-tested) records each distinct `(subcommand, offset)` with the CRC of exactly the bytes
   served — §2.2's call — and `control_parser.c` drains it as `console nfc:` INFO lines at the

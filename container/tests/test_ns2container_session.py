@@ -30,8 +30,8 @@ from container.ns2sealing import KeyMaterial, SealedTag, identity_of  # noqa: E4
 from container.ns2serial import FrameTransport, PortBusy  # noqa: E402
 
 
-def fake_sealer(image: bytes, key: KeyMaterial) -> SealedTag:
-    return SealedTag(image=image, identity=identity_of(image))
+def fake_sealer(image: bytes, key: KeyMaterial, *, identity: bytes | None = None) -> SealedTag:
+    return SealedTag(image=image, identity=identity or identity_of(image))
 
 
 class BusyDevice(StubDevice):

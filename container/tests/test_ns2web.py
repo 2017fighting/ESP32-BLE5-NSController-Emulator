@@ -40,8 +40,8 @@ TAG = support.sealing_fixture("tag")
 KEY_BYTES = support.sealing_fixture("key")
 
 
-def fake_sealer(image: bytes, key: KeyMaterial) -> SealedTag:
-    return SealedTag(image=image, identity=identity_of(image))
+def fake_sealer(image: bytes, key: KeyMaterial, *, identity: bytes | None = None) -> SealedTag:
+    return SealedTag(image=image, identity=identity or identity_of(image))
 
 
 @unittest.skipUnless(HAVE_AIOHTTP, "aiohttp is not installed")

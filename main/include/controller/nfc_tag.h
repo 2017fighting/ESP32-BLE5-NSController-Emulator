@@ -143,6 +143,34 @@ extern "C" {
 #define NFC_TAG_PUSH_READ_DATA 0
 #endif
 
+/* §6.6's re-presentation rule — the reference's continue-for-write
+ * (`ns_pc_control/server/src/virtual_controller.cpp:324-331`,
+ * `ns_pc_control/server/src/s2_nfc_codec.cpp:764-769`, context tier):
+ * after a completed read the reference ejects the tag, and it keeps the tag in
+ * the field only when the *same* identity is presented again inside 30 s — that
+ * second presentation is the console's "write what you just read" tap, and the
+ * register screen's write (`0x14`/`0x08`) needs exactly that continuation.
+ *
+ * Default OFF, because it is a lifecycle choice rather than a landed fact: the
+ * bench's full-pull run (2026-10-04/05, `register-screen-bench.md` §8–§9) showed
+ * the console read all 600 bytes on a fresh identity and then re-prompt, with the
+ * post-eject `07` the difference from the reference. **The same-UID
+ * re-presentation was then benched and crashed the console** (`2011-0301`): it
+ * armed a read (`0x06`) but pulled nothing, the device's unsolicited whole-tag
+ * push streamed, and the console force-rebooted ~95 s later (§9.3). The defer
+ * itself never executed — there was no `0x04` on that placement — so this knob is
+ * not implicated, but the repeated identity and the push-with-no-pull are two
+ * unseparated candidates and neither is a landing. It is a no-op in production by
+ * construction — the container mints one identity per placement (§6.4,
+ * ADR-0011), so a UID can never repeat. */
+#ifndef NFC_TAG_DEFER_READ_EJECT
+#define NFC_TAG_DEFER_READ_EJECT 0
+#endif
+
+/* The reference's window for the second presentation
+ * (`std::chrono::seconds(30)` in `set_amiibo_data_for_port`). */
+#define NFC_TAG_REPRESENT_WINDOW_MS 30000u
+
 /* §6.1/§6.3: the identity is the seven-byte NFC UID. */
 #define NFC_TAG_UID_SIZE 7u
 
@@ -250,6 +278,20 @@ typedef struct {
         bool read_complete; /* a `0x15` reached the end of the served space */
         bool ejected;       /* post-eject: `0x04` ended a completed read */
     } lifecycle;
+    /* §6.6's re-presentation rule behind `NFC_TAG_DEFER_READ_EJECT`: the last
+     * *completed read's* identity and when it finished, so a placement of the
+     * same UID inside the reference's window defers that read's eject. The
+     * tracking is compiled in only when the knob is on; `defer_eject` is always
+     * `false` otherwise (and a tag that was never read never arms it). */
+    struct {
+        bool defer_eject; /* this placement re-presents the last read's UID */
+#if NFC_TAG_DEFER_READ_EJECT
+        uint8_t uid[NFC_TAG_UID_SIZE];
+        uint32_t at_ms;
+        bool valid;
+        uint32_t now_ms; /* the tick clock, so a `0x04` can date its read */
+#endif
+    } repeat;
     bool placed;     /* the tag is answering reads */
     bool staged;     /* a replacement's bytes are committed and the gap is open */
     uint8_t counter; /* the reader-event counter behind `state` (0x01–0x07) */

@@ -208,6 +208,12 @@ static bool read_image(nfc_tag_t *nfc, uint8_t image[NFC_TAG_SIZE])
     return true;
 }
 
+/* The write helpers are defined with the write tests further down; the
+ * continuation test above them stages the captured frame. */
+static void build_write_stream(uint8_t stream[NFC_TAG_WRITE_STAGING_SIZE],
+                               const uint8_t uid[NFC_TAG_UID_SIZE]);
+static size_t stage_stream(nfc_tag_t *nfc, const uint8_t *stream, size_t total, size_t skip);
+
 /* --------------------------------------------------------------------- boot */
 
 static void test_boot_state(void)
@@ -548,6 +554,167 @@ static void test_an_incomplete_read_is_not_post_eject(void)
           "a scan whose read never completed answers 09 after 0x04, got 0x%02x", out[0]);
     CHECK(out[1] == 0x00 && out[8] == 0x07, "and keeps the captured positions");
 }
+
+#if NFC_TAG_DEFER_READ_EJECT
+/* §6.6's re-presentation rule (the reference's continue-for-write,
+ * `ns_pc_control/server/src/virtual_controller.cpp:324-331`): the first presentation of an identity ejects
+ * after its completed read, and the *second* presentation of the same identity
+ * inside 30 s keeps the tag in the field so the console's write can follow. */
+static void test_a_repeated_identity_defers_the_eject(void)
+{
+    nfc_tag_t nfc;
+    nfc_tag_init(&nfc);
+    uint8_t tag[NFC_TAG_SIZE];
+    build_tag(tag, 0x11);
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now);
+
+    uint8_t out[NFC_STATUS_RESPONSE_SIZE];
+    nfc_tag_command(&nfc, NFC_CMD_READ_DEVICE, k_read_request, sizeof(k_read_request), NULL, 0);
+    CHECK(read_to_the_end(&nfc), "the first read reaches the end");
+    nfc_tag_command(&nfc, NFC_CMD_STOP_POLLING, NULL, 0, NULL, 0);
+    nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_STATUS_EJECTED && out[1] == NFC_STATUS_EJECTED_DETAIL,
+          "the first presentation still ejects, got %02x %02x", out[0], out[1]);
+
+    /* The same identity again, inside the window: the §6.5 gap, then the read's
+     * stop keeps the tag in the field. */
+    g_now += 1000;
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now);
+    nfc_tag_tick(&nfc, g_now + NFC_TAG_GAP_MS);
+    CHECK(nfc_tag_placed(&nfc), "the repeated identity is placed again");
+    nfc_tag_command(&nfc, NFC_CMD_READ_DEVICE, k_read_request, sizeof(k_read_request), NULL, 0);
+    CHECK(read_to_the_end(&nfc), "the second read reaches the end");
+    nfc_tag_command(&nfc, NFC_CMD_STOP_POLLING, NULL, 0, NULL, 0);
+    nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_STATUS_TAG_DETECTED,
+          "the repeated identity's stop keeps 09 for the write, got 0x%02x", out[0]);
+    CHECK(out[1] == 0x00 && out[8] == 0x07 && nfc_tag_state(&nfc) != NFC_STATE_IDLE,
+          "and the tag stays in the reader's field");
+    uint8_t chunk[NFC_TAG_READ_HEAD_SIZE + NFC_TAG_READ_CHUNK];
+    CHECK(read_wire(&nfc, wire_of(0), chunk, sizeof(chunk)) > 0,
+          "the deferred tag still answers 0x15");
+}
+
+/* A different identity is a different amiibo: the reference's key is the UID, so
+ * the eject stands and the field empties. */
+static void test_a_different_identity_still_ejects(void)
+{
+    nfc_tag_t nfc;
+    nfc_tag_init(&nfc);
+    uint8_t tag[NFC_TAG_SIZE];
+    build_tag(tag, 0x11);
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now);
+    nfc_tag_command(&nfc, NFC_CMD_READ_DEVICE, k_read_request, sizeof(k_read_request), NULL, 0);
+    CHECK(read_to_the_end(&nfc), "the first read reaches the end");
+    nfc_tag_command(&nfc, NFC_CMD_STOP_POLLING, NULL, 0, NULL, 0);
+
+    uint8_t other[NFC_TAG_SIZE];
+    build_tag(other, 0x11);
+    other[1] = 0x22; /* a different UID */
+    g_now += 1000;
+    nfc_tag_place(&nfc, other, sizeof(other), g_now);
+    nfc_tag_tick(&nfc, g_now + NFC_TAG_GAP_MS);
+    nfc_tag_command(&nfc, NFC_CMD_READ_DEVICE, k_read_request, sizeof(k_read_request), NULL, 0);
+    CHECK(read_to_the_end(&nfc), "the second read reaches the end");
+    nfc_tag_command(&nfc, NFC_CMD_STOP_POLLING, NULL, 0, NULL, 0);
+    uint8_t out[NFC_STATUS_RESPONSE_SIZE];
+    nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_STATUS_EJECTED, "a different identity ejects, got 0x%02x", out[0]);
+}
+
+/* The window is the reference's 30 s: past it, the same identity is a fresh
+ * first presentation again. */
+static void test_the_repeat_window_expires(void)
+{
+    nfc_tag_t nfc;
+    nfc_tag_init(&nfc);
+    uint8_t tag[NFC_TAG_SIZE];
+    build_tag(tag, 0x11);
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now);
+    nfc_tag_command(&nfc, NFC_CMD_READ_DEVICE, k_read_request, sizeof(k_read_request), NULL, 0);
+    CHECK(read_to_the_end(&nfc), "the first read reaches the end");
+    nfc_tag_command(&nfc, NFC_CMD_STOP_POLLING, NULL, 0, NULL, 0);
+
+    g_now += NFC_TAG_REPRESENT_WINDOW_MS + 1u;
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now);
+    nfc_tag_tick(&nfc, g_now + NFC_TAG_GAP_MS);
+    nfc_tag_command(&nfc, NFC_CMD_READ_DEVICE, k_read_request, sizeof(k_read_request), NULL, 0);
+    CHECK(read_to_the_end(&nfc), "the second read reaches the end");
+    nfc_tag_command(&nfc, NFC_CMD_STOP_POLLING, NULL, 0, NULL, 0);
+    uint8_t out[NFC_STATUS_RESPONSE_SIZE];
+    nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_STATUS_EJECTED,
+          "past the window the same identity ejects again, got 0x%02x", out[0]);
+}
+
+/* The rule keys on the *completed read*, not on the placement: a tag that was
+ * never read arms nothing, so re-presenting it still ejects. */
+static void test_an_unread_tag_does_not_arm_the_defer(void)
+{
+    nfc_tag_t nfc;
+    nfc_tag_init(&nfc);
+    uint8_t tag[NFC_TAG_SIZE];
+    build_tag(tag, 0x11);
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now); /* never read */
+    g_now += 1000;
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now); /* same UID, still never read */
+    nfc_tag_tick(&nfc, g_now + NFC_TAG_GAP_MS);
+
+    uint8_t out[NFC_STATUS_RESPONSE_SIZE];
+    nfc_tag_command(&nfc, NFC_CMD_READ_DEVICE, k_read_request, sizeof(k_read_request), NULL, 0);
+    CHECK(read_to_the_end(&nfc), "the read reaches the end");
+    nfc_tag_command(&nfc, NFC_CMD_STOP_POLLING, NULL, 0, NULL, 0);
+    nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_STATUS_EJECTED,
+          "an unread tag's re-presentation still ejects, got 0x%02x", out[0]);
+}
+
+/* A committed write ends the continuation: the reference clears its recent-read
+ * record, so the next presentation of that UID is a fresh first one again. */
+static void test_a_committed_write_clears_the_defer(void)
+{
+    nfc_tag_t nfc;
+    nfc_tag_init(&nfc);
+    uint8_t tag[NFC_TAG_SIZE];
+    build_tag(tag, 0x11);
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now);
+
+    /* First read: ejects, and records the read's UID. */
+    nfc_tag_command(&nfc, NFC_CMD_READ_DEVICE, k_read_request, sizeof(k_read_request), NULL, 0);
+    CHECK(read_to_the_end(&nfc), "the first read reaches the end");
+    nfc_tag_command(&nfc, NFC_CMD_STOP_POLLING, NULL, 0, NULL, 0);
+
+    /* The same UID again: the read's stop defers the eject. */
+    g_now += 1000;
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now);
+    nfc_tag_tick(&nfc, g_now + NFC_TAG_GAP_MS);
+    nfc_tag_command(&nfc, NFC_CMD_READ_DEVICE, k_read_request, sizeof(k_read_request), NULL, 0);
+    CHECK(read_to_the_end(&nfc), "the second read reaches the end");
+    nfc_tag_command(&nfc, NFC_CMD_STOP_POLLING, NULL, 0, NULL, 0);
+    uint8_t out[NFC_STATUS_RESPONSE_SIZE];
+    nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_STATUS_TAG_DETECTED, "the deferred stop kept the tag in the field");
+
+    /* The write the continuation exists for; the commit clears the record. */
+    uint8_t uid[NFC_TAG_UID_SIZE];
+    nfc_tag_identity(&nfc, uid);
+    uint8_t stream[NFC_TAG_WRITE_STAGING_SIZE];
+    build_write_stream(stream, uid);
+    CHECK(stage_stream(&nfc, stream, sizeof(stream), (size_t)-1) == NFC_TAG_WRITE_STAGING_SIZE,
+          "the stream stages");
+    nfc_tag_command(&nfc, NFC_CMD_COMMIT_WRITE, NULL, 0, NULL, 0);
+
+    /* A later presentation of that UID is a fresh first one: it ejects. */
+    g_now += 1000;
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now);
+    nfc_tag_tick(&nfc, g_now + NFC_TAG_GAP_MS);
+    nfc_tag_command(&nfc, NFC_CMD_READ_DEVICE, k_read_request, sizeof(k_read_request), NULL, 0);
+    CHECK(read_to_the_end(&nfc), "the third read reaches the end");
+    nfc_tag_command(&nfc, NFC_CMD_STOP_POLLING, NULL, 0, NULL, 0);
+    nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_STATUS_EJECTED, "a write clears the continuation, got 0x%02x", out[0]);
+}
+#endif
 
 /* The bench's third probe (`0x2c0`) falls past the served space, and the bare
  * `01 00 00` marker is a well-formed "nothing more" (#46). It is **not** the
@@ -1264,6 +1431,13 @@ int main(void)
 #endif
     test_the_read_lifecycle_is_a_level();
     test_an_incomplete_read_is_not_post_eject();
+#if NFC_TAG_DEFER_READ_EJECT
+    test_a_repeated_identity_defers_the_eject();
+    test_a_different_identity_still_ejects();
+    test_the_repeat_window_expires();
+    test_an_unread_tag_does_not_arm_the_defer();
+    test_a_committed_write_clears_the_defer();
+#endif
     test_the_marker_past_the_space_is_not_the_reads_end();
     test_the_lifecycle_is_per_scan();
     test_the_report_byte_moves_with_the_read();

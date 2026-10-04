@@ -243,6 +243,15 @@ class PlaintextCacheTest(unittest.TestCase):
         self.assertEqual(self.sealer.unpacks, 1)
         self.assertNotEqual(first.identity, second.identity)  # still re-sealed
 
+    def test_a_given_identity_is_honoured_and_not_minted(self):
+        # The bench's re-presentation step (§6.6, the reference's continue-for-write)
+        # seeds `identity`; the sealer must seal that UID, not a fresh one.
+        identity = bytes.fromhex("04112233445566")
+        sealed = self.sealer(FixtureKey.tag, self.key, identity=identity)
+        self.assertEqual(sealed.identity, identity)
+        self.assertEqual(identity_of(sealed.image), identity)
+        unpack(sealed.image, self.key)
+
     def test_rotation_copies_the_cache_instead_of_sealing_it_in_place(self):
         first = self.sealer(FixtureKey.tag, self.key)
         cached_after_first = self.sealer.plaintext(FixtureKey.tag, self.key)

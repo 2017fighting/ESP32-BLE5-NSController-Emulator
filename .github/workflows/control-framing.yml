@@ -88,6 +88,13 @@ jobs:
               -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_push" \
               test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
             "$RUNNER_TEMP/test_nfc_tag_push"
+            # #45: the reference's continue-for-write — a re-presented identity's
+            # completed read keeps the tag in the field (default OFF; the bench
+            # build that opens the register screen's write turns it on).
+            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_DEFER_READ_EJECT=1 \
+              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_defer" \
+              test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
+            "$RUNNER_TEMP/test_nfc_tag_defer"
           done
 
       - name: C — the NFC console-traffic trace (#36)

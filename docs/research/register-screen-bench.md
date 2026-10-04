@@ -258,7 +258,7 @@ identity.
 
 ## 8. The third session, prepared: the corrected combination (issue #45)
 
-**Status: prepared and flashed, not run.** Every build in §1 and §7 served shapes that are now
+**Status: prepared, flashed, and run — the result is §9.** Every build in §1 and §7 served shapes that are now
 G-19's defect, and the three tickets that carried the corrections landed (#46 the served shapes,
 #47 the `0x14` write path, #48 the reader contract and the report byte). That changes what "the
 continuation's variable" even is: this take is not another knob over take 13, it is the
@@ -385,3 +385,94 @@ consecutive crash ends the session, whatever the trace shows.
   answers the push shapes, the framing and the trailing region together.
 - **Either way, if nothing completes**, the fallback question (#39) decides what replaces the
   read, with §7's and this session's evidence attached.
+
+---
+
+## 9. The third session, run (2026-10-04 23:50 – 2026-10-05 00:25): the console pulls the served space's tail, and the same-UID re-presentation crashes it
+
+**Scope.** §8's take, on the operator's console: the corrected combination
+(`NFC_TAG_PUSH_READ_DATA=1`; app `0x86fb0`, SHA-256 `2de66430…`) first, then — after the console
+re-prompted — the reference's continue-for-write as a second build
+(`NFC_TAG_PUSH_READ_DATA=1 NFC_TAG_DEFER_READ_EJECT=1`; app `0xd8700`, SHA-256 `d38e7cdb…`) with
+the driver's new `place-same` re-presenting the *same* identity. The session stopped on the
+operator's call after the console's `2011-0301` (G-18's discipline: one crash is a datum, and
+this run had no progress to weigh against a second crash).
+
+Setup both times: the operator's Joy-Con parks the cursor on 设置 → amiibo → 添加所有者和昵称,
+the device's own `A` enters (the §2 binding rule; the prompt's icon is the Pro Controller), the
+resident driver running `--tee-all`, and `place` of Mario (`Super Mario Amiibo/Mario.bin`) under
+a fresh identity.
+
+### 9.1 The full pull: the corrected shapes are accepted
+
+Fresh identity `04c13b1e066980`. The console's cycle, verbatim from the trace:
+
+    0x03 (cfg 0000002c01) → 0x05 status=09 → 0x04      ← the one-shot probe
+    [push: 0x05 (61 B) + 9×0x15 (8×70 B + 40 B), the whole 600-byte space]
+    0x03 (cfg 00e8032c01) → 0x05 status=09 → 0x06 len=19
+    → 0x05 status=04                                   ← the armed-level gate
+    → 0x15 off=0046, 008c, 00d2, 0118, 015e, 01a4, 01ea   (n=73, 70 data bytes each)
+    → 0x15 off=0230 n=43 (last=1)                      ← the served space's end
+    → 0x04 → 0x03 → 0x05 status=07 → 0x04
+    scan cmds=17 [03=2 04=3 05=3 06=1 14=0 15=8] reps=2 drops=0
+
+**The console pulled every chunk it asked for.** Eight sequential chunks from wire `0x46` to
+`0x230`, the final one `last=1` — 530 bytes (7×70 + 40) — the canonical capture's own `0x46`
+start, whose first 70 bytes had already been consumed (here by the push, which serves the whole
+space from wire `0`). §7's three deterministic probes (`0x40`/`0x140`/`0x2c0`) are gone and the
+step is 70. The report byte walked `01`–`07` across the read. **No crash.** `0x14`/`0x08` never
+arrived. What the device cannot observe is whether the console *used* the pushed first chunk;
+the pulls alone are 530 of the space's 600 bytes (and 530 of the image's 540, since the image
+starts at wire `0x3C`).
+
+### 9.2 The console does not advance; it re-prompts
+
+After the read the console re-armed once (`0x03` → `0x05 status=07`, the post-eject answer →
+`0x04`) and stopped, back on the 读取 amiibo prompt: no owner/nickname editor, no error chime.
+
+That re-prompt is what the reference's flow predicts. Its *first* presentation also ejects after
+the completed read (`defer_read_eject=false`, `ns_pc_control/server/src/s2_nfc_codec.cpp:764-769`);
+the console's second **placement** is the "write what you just read" step, and only the **same
+identity** placed again inside 30 s sets `defer_read_eject`, so that read's stop keeps the tag in
+the field for the write (`ns_pc_control/server/src/virtual_controller.cpp:324-331`). §8's second
+take ported exactly that, and the driver gained `place-same`.
+
+### 9.3 The same-UID re-presentation, and the crash
+
+`place-same` (identity `04c13b1e066980` again, 12 s after the first placement) produced:
+
+    0x03 → 0x05 status=09 → 0x04          ← one probe cycle; the drain reads 06=0
+    nfc byte: 00→06→07
+    nfc byte: 07→01                       ← operation-ready: the console DID arm a read (0x06)
+    [push: 0x05 (61 B) + 9×0x15]          ← the device streams the whole tag
+    0x15 pulls: none. 0x04: none.
+    +95 s:  hid: msys low, dropped 101 reports
+            console link: disconnected (reason=520)   ← the console's 2011-0301 forced reboot
+    +7 s:   reconnected; the container rotated to 04ddc414225de4 (the drop policy)
+
+**This is the session's crash and it is a new factor.** On the fresh-identity placement the
+console pulled all eight chunks and did not crash. On the same-identity re-presentation it armed
+the read (`0x06` — the report byte's operation-ready edge is consistent with it, though the
+trace had not drained and the summary is not a witness) and then **pulled nothing**, while the
+device pushed the whole tag as unrequested `0x15` notifications. ~95 s later the console's
+amiibo module crashed and force-rebooted.
+
+Two candidates, **not separated**: the repeated identity (the console had already read this
+UID), and the unsolicited whole-tag push with no pull. The defer itself did not execute — there
+was no `0x04` on that placement — so `NFC_TAG_DEFER_READ_EJECT` is not implicated by this run
+and it stays default OFF.
+
+### 9.4 Where this leaves the read gate
+
+- **The wire shapes are settled.** The console accepts the corrected 600-byte space, the
+  70-byte `last` · `len` chunks and the level `04`: it pulls every chunk it asks for and does
+  not crash. §3's "one to three chunks, then the deadline" is closed.
+- **The continuation is a presentation/lifecycle question, not a framing one.** The console
+  pulled the space and still did not advance: it wants the second placement of the *same*
+  amiibo, and that placement is where it broke.
+- **The isolation that remains**, in order: (a) the same-UID re-presentation **with the push
+  off**, to separate the repeated identity from the unrequested stream; (b) the deferred stop
+  itself, once a read reaches it without a push. One bench build each, under G-18's
+  two-consecutive-crash stop.
+- The freshness measurement (#37) is still blocked: the register screen has no console-side
+  bookkeeping and the read gate is not past the editor.

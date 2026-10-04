@@ -153,20 +153,25 @@ bool nfc_tag_placed(const nfc_tag_t *nfc)
     return nfc != NULL && nfc->placed;
 }
 
+/* §6.3: the seven-byte UID out of any tag image — `UID[0..2]` then `UID[3..6]`,
+ * skipping the NTAG215 `BCC0` check byte at byte 3 (§6.1). */
+static void nfc_uid_from_image(const uint8_t *image, uint8_t out[NFC_TAG_UID_SIZE])
+{
+    out[0] = image[0];
+    out[1] = image[1];
+    out[2] = image[2];
+    out[3] = image[4];
+    out[4] = image[5];
+    out[5] = image[6];
+    out[6] = image[7];
+}
+
 void nfc_tag_identity(const nfc_tag_t *nfc, uint8_t out[NFC_TAG_UID_SIZE])
 {
     if (nfc == NULL || out == NULL) {
         return;
     }
-    /* §6.3: the seven-byte UID is `UID[0..2]` then `UID[3..6]`; the byte between
-     * them is the NTAG215 `BCC0` check byte and is not part of the UID (§6.1). */
-    out[0] = nfc->tag[0];
-    out[1] = nfc->tag[1];
-    out[2] = nfc->tag[2];
-    out[3] = nfc->tag[4];
-    out[4] = nfc->tag[5];
-    out[5] = nfc->tag[6];
-    out[6] = nfc->tag[7];
+    nfc_uid_from_image(nfc->tag, out);
 }
 
 void nfc_tag_place(nfc_tag_t *nfc, const uint8_t *tag, size_t len, uint32_t now_ms)
@@ -184,6 +189,20 @@ void nfc_tag_place(nfc_tag_t *nfc, const uint8_t *tag, size_t len, uint32_t now_
     nfc_clear_read_op(nfc);
     nfc_reset_write(nfc);
     nfc_reset_lifecycle(nfc);
+    nfc->repeat.defer_eject = false;
+#if NFC_TAG_DEFER_READ_EJECT
+    /* §6.6's re-presentation rule: the reference keys it on the identity of the
+     * *completed read*, so only a placement that re-presents that UID inside
+     * 30 s of the read defers; the first placement of every UID is unaffected. */
+    nfc->repeat.now_ms = now_ms;
+    {
+        uint8_t incoming[NFC_TAG_UID_SIZE];
+        nfc_uid_from_image(tag, incoming);
+        nfc->repeat.defer_eject =
+            nfc->repeat.valid && memcmp(incoming, nfc->repeat.uid, sizeof(incoming)) == 0 &&
+            (uint32_t)(now_ms - nfc->repeat.at_ms) <= NFC_TAG_REPRESENT_WINDOW_MS;
+    }
+#endif
 
     if (had_a_tag) {
         nfc->placed = false;
@@ -209,7 +228,15 @@ void nfc_tag_place(nfc_tag_t *nfc, const uint8_t *tag, size_t len, uint32_t now_
 
 void nfc_tag_tick(nfc_tag_t *nfc, uint32_t now_ms)
 {
-    if (nfc == NULL || !nfc->staged) {
+    if (nfc == NULL) {
+        return;
+    }
+#if NFC_TAG_DEFER_READ_EJECT
+    /* The clock a `0x04` dates its completed read with, kept current here and
+     * in `nfc_tag_place` — the only two ticks the module is given. */
+    nfc->repeat.now_ms = now_ms;
+#endif
+    if (!nfc->staged) {
         return;
     }
     if ((int32_t)(now_ms - nfc->gap_until_ms) < 0) {
@@ -236,6 +263,7 @@ void nfc_tag_unplace(nfc_tag_t *nfc)
     nfc_clear_read_op(nfc);
     nfc_reset_write(nfc);
     nfc_reset_lifecycle(nfc);
+    nfc->repeat.defer_eject = false; /* the continuation is per presentation */
     /* The console is still asking; it just has nothing to scan now. */
     if (nfc->polling == NFC_STATE_TAG_DETECTED) {
         nfc->polling = NFC_STATE_POLLING;
@@ -486,6 +514,13 @@ static bool nfc_commit_write(nfc_tag_t *nfc)
     nfc->write.active = false;
     nfc->lifecycle.armed = false;
     nfc->lifecycle.read_complete = false;
+    /* The write is the read's continuation's endpoint: a later presentation is
+     * a fresh read, not another deferral (the reference clears its recent-read
+     * record here too). */
+#if NFC_TAG_DEFER_READ_EJECT
+    nfc->repeat.valid = false;
+#endif
+    nfc->repeat.defer_eject = false;
     nfc_reader_event(nfc); /* write complete (§4.9) */
     return true;
 }
@@ -535,11 +570,27 @@ size_t nfc_tag_command(nfc_tag_t *nfc, uint8_t subcmd, const uint8_t *payload, s
         /* §6.6 (#48): a stop that ends a *completed* read leaves the reader's
          * field empty — the `0x05` answer is `07 41` from here until a new
          * placement. A stop after an incomplete read is not that: it is the
-         * tag-in-field `09`, which is where the bench's no-crash cycles ended. */
+         * tag-in-field `09`, which is where the bench's no-crash cycles ended.
+         *
+         * The completed read is also what the re-presentation rule keys on (the
+         * reference records the read UID here, not at placement), so a tag that
+         * was never read can never arm the defer. */
         if (nfc->lifecycle.read_complete) {
-            nfc->lifecycle.ejected = true;
-            nfc_reader_event(nfc);
+#if NFC_TAG_DEFER_READ_EJECT
+            if (!nfc->write.committed) {
+                nfc_tag_identity(nfc, nfc->repeat.uid);
+                nfc->repeat.at_ms = nfc->repeat.now_ms;
+                nfc->repeat.valid = true;
+            }
+#endif
+            if (!nfc->repeat.defer_eject) {
+                nfc->lifecycle.ejected = true;
+                nfc_reader_event(nfc);
+            }
         }
+        /* A *deferred* stop (the same identity re-presented, §6.6) leaves the
+         * tag in the field: the status stays `09` and the console's write
+         * continuation (`0x14`/`0x08`) finds a tag to write. */
         nfc->lifecycle.read_complete = false;
         /* The write-back dies with the scan's status; its bytes stay in the
          * volatile tag until the placement does. */
