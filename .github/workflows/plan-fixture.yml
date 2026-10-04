@@ -24,8 +24,12 @@ jobs:
       # The container's seams and screens are exercised by the same discovery:
       # `container.ns2container` imports aiohttp, so its whole test tree runs
       # with the real dependencies installed rather than skipping.
+      # `ruff` is version-pinned, not floating: the lint contract lives in the
+      # repo root's `ruff.toml` and its rule set is only meaningful together
+      # with the ruff that reads it (0.16.0 changed the defaults from 59 rules
+      # to 413 and turned an unchanged tree red).
       - name: Install container dependencies
-        run: pip install -r container/requirements.txt ruff
+        run: pip install -r container/requirements.txt ruff==0.16.10
 
       - name: Python — lint the container
         run: ruff check container/

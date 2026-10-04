@@ -1,0 +1,20 @@
+# The repo's lint contract: `ruff check container/` (Stage 0's drift guard,
+# spec §5.7) and the `ruff check container/ scripts/` that the bench notes
+# record as clean both resolve to this file.
+#
+# Why it exists: ruff 0.16.0 (2026-07-23) replaced its default rule set — 59
+# rules became 413, and 18 of the old ones (E401, E402, E711, …) were dropped
+# from the default at the same time. With no config in the tree, `ruff check
+# container/` silently inherited all of that and went from clean to 83 findings
+# on an unchanged tree, failing CI against a `pip install ruff` that floats on
+# the newest release. The rule set is stated here instead of inherited so that
+# a ruff bump can no longer rewrite the contract by itself.
+
+target-version = "py312"
+
+[lint]
+# The rule set that `ruff check container/` actually ran under before 0.16:
+# pycodestyle's E4/E7/E9 families and pyflakes. Everything else ruff now
+# defaults to is a deliberate opt-in decision, not an accident of the version
+# that CI happened to install.
+select = ["E4", "E7", "E9", "F"]
