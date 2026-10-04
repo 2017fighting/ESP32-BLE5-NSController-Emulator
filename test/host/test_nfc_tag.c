@@ -231,8 +231,24 @@ static void test_read_buffer_slices_page_wise(void)
     CHECK(n == 3 + NFC_TAG_READ_CHUNK, "the seam chunk is full");
     CHECK(memcmp(&out[3 + 4], tag, NFC_TAG_READ_CHUNK - 4) == 0,
           "the seam chunk bridges the framing into the image");
+    CHECK(read_buffer(&nfc, NFC_TAG_SERVED_SIZE - 4, out, sizeof(out)) == 3 + 4,
+          "the served space ends at the framing+image edge");
+#if NFC_TAG_READ_PAD_TO != 0
+    /* The two view knobs are legal together (no bench build has run the
+     * pair): the pad extends past the P1 served space with zeros, and only
+     * asks past the pad have nothing. */
+    CHECK(read_buffer(&nfc, NFC_TAG_SERVED_SIZE, out, sizeof(out)) ==
+              3u + (NFC_TAG_READ_PAD_TO - NFC_TAG_SERVED_SIZE > NFC_TAG_READ_CHUNK
+                        ? NFC_TAG_READ_CHUNK
+                        : NFC_TAG_READ_PAD_TO - NFC_TAG_SERVED_SIZE),
+          "the pad serves a zero chunk past the P1 served space");
+    CHECK(out[3] == 0x00 && out[4] == 0x00, "the pad past the P1 space is zero-filled");
+    CHECK(read_buffer(&nfc, NFC_TAG_READ_PAD_TO, out, sizeof(out)) == 0,
+          "an offset past the pad has nothing to serve");
+#else
     CHECK(read_buffer(&nfc, NFC_TAG_SERVED_SIZE, out, sizeof(out)) == 0,
           "an offset past the served space has nothing to serve");
+#endif
 #elif NFC_TAG_READ_PAD_TO != 0
     /* The bench pad (§6.6): in-space asks beyond the image are zero-filled
      * chunks — an empty answer is what aborts the console's cycle — and only

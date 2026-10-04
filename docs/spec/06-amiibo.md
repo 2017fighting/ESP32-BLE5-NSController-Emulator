@@ -229,11 +229,15 @@ and they are firmware changes rather than protocol changes:
   observed against this device; and a `0x05` **answer** carrying the read-done state `04`
   triggers the first pull within 30 ms (the same bytes pushed unsolicited are ignored — the
   console's response parser correlates by subcommand). The remaining gate is the
-  *continuation* — the console pulls one chunk and stops (`register-screen-bench.md` §3) —
-  and three frame combinations **crashed the console's amiibo module** (`2011-0301`, forced
-  reboot; G-18). The bench knobs for all of it are in the tree, default OFF
+  *continuation* — the console probes three offsets deterministically (`0x40`/`0x140`/`0x2c0`),
+  takes the `04`, and rides to its deadline; five frame combinations across two sessions
+  **crashed the console's amiibo module** (`2011-0301`, forced reboot — the ledger and its
+  isolated factors are G-18's, §12.3; the record is `register-screen-bench.md` §3, §7). The
+  bench knobs for all of it are in the tree, the feature toggles default OFF and the value
+  knobs default to the safe shapes
   (`nfc_tag.h`: `NFC_TAG_PUSH_READ_DATA` (status-first — the safe order), `NFC_TAG_STATUS_DONE_WHEN_READ`,
-  `NFC_TAG_READ_DONE_BYTE/MS`, `NFC_TAG_READ_PAD_TO`, `NFC_TAG_BUFFER_P1_PREFIX` — the last
+  `NFC_TAG_READ_DONE_BYTE/MS` (`MS` defaults to the pulse; the hold is the falsified variant), `NFC_TAG_READ_PAD_TO`,
+  `NFC_TAG_BUFFER_P1_PREFIX` — the last
   serves `[60 B P1 framing][image]`, the layout the canonical `0x46`→image-`0x0A` shift
   implies, host-tested under its own compile).
 - **The `0x14` payload is framed, not a raw slice (G-17).** The canonical write capture's

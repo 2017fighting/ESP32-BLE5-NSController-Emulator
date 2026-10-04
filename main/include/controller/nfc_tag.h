@@ -146,7 +146,11 @@ extern "C" {
  * out-of-range ask currently answers *nothing*, which aborts the cycle. This
  * knob pads the served space to `NFC_TAG_READ_PAD_TO` bytes, image verbatim at
  * offset 0 and zeros beyond, so every in-space ask gets a well-formed chunk.
- * Default 0 (the spec's plain 540-byte space). */
+ * Default 0 (the spec's plain 540-byte space). **Not the crash discriminator
+ * (register-screen-bench.md §7.2):** the console's third probe (`0x2c0`) read zeros
+ * with the pad and nothing without it, and the console crashed in the padded run all
+ * the same — but every no-crash config since that record's §1, take 7, has carried
+ * the pad. */
 #ifndef NFC_TAG_READ_PAD_TO
 #define NFC_TAG_READ_PAD_TO 0
 #endif
@@ -160,7 +164,12 @@ extern "C" {
  * 0x0A — a constant 0x3C=60-byte shift. The NS1 P1 packet's framing minus its
  * UID field is exactly 60 bytes (15 header + 4 zeros + 32 magic + 9 echoed
  * page-ranges), so the served space becomes [60 B framing][540 B image] and
- * the image starts at wire 0x3C. Default OFF: the plain image-at-0 view. */
+ * the image starts at wire 0x3C. Default OFF: the plain image-at-0 view.
+ * **Crash-correlated (G-18):** both P1-prefix builds to run crashed the console
+ * (`2011-0301`) — `register-screen-bench.md` §1 take 12 (late) and §7.1 run A —
+ * against no-crash image-at-0 siblings; the framing's magic/range bytes are hardcoded
+ * NS1 capture data and stay that record's §3, suspect 2, until a real-controller
+ * capture says what belongs there. */
 #ifndef NFC_TAG_BUFFER_P1_PREFIX
 #define NFC_TAG_BUFFER_P1_PREFIX 0
 #endif
@@ -187,10 +196,22 @@ extern "C" {
  * its read at `04` only *between* the data phase and the return to `09`
  * (tag still in field) — the console's asks land in the first ~120 ms after
  * `0x06`, then it waits out its ~3 s deadline, which smells like a console
- * blocked on the byte returning. Default 0 holds the done byte until the
- * console restarts or stops polling (the previous behaviour). */
+ * blocked on the byte returning.
+ *
+ * **FALSIFIED as a hold (register-screen-bench.md §7.1, run B):** holding the
+ * done byte (`0`) crashed the console (`2011-0301`) against take 10's no-crash
+ * sibling with the hold as the *single* variable — and run A crashed identically
+ * with the byte held at `03`, so the hold, not the value, is the discriminator.
+ * The first session's takes 5–7 held the byte without crashing, but they predate
+ * the `04` answer (`NFC_TAG_STATUS_DONE_WHEN_READ`, take 10) — the trigger is the
+ * conjunction: a byte pinned at read-done *while `0x05` answers also say `04`
+ * forever*. The NS1 lifecycle's own shape is the pulse: after the data phase the
+ * state returns to `09` (tag in field), it never rests at `04`. The default is
+ * therefore the 150 ms pulse; `0` (hold until the console restarts or stops
+ * polling) is retained only as the falsified variant a bench build must now ask
+ * for by name. */
 #ifndef NFC_TAG_READ_DONE_MS
-#define NFC_TAG_READ_DONE_MS 0
+#define NFC_TAG_READ_DONE_MS 150
 #endif
 
 /* §6.1/§6.3: the identity is the seven-byte NFC UID. */

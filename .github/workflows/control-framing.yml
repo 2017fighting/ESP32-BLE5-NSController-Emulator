@@ -92,6 +92,13 @@ jobs:
               -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_p1" \
               test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
             "$RUNNER_TEMP/test_nfc_tag_p1"
+            # The two view knobs are legal together (the #37 review pinned the
+            # pad-past-the-P1-space behaviour), so CI compiles the pair too.
+            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_BUFFER_P1_PREFIX=1 \
+              -DNFC_TAG_READ_PAD_TO=0x300u \
+              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_p1_pad" \
+              test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
+            "$RUNNER_TEMP/test_nfc_tag_p1_pad"
             cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_STATUS_DONE_WHEN_READ=1 \
               -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_done" \
               test/host/test_nfc_tag.c main/src/controller/nfc_tag.c

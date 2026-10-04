@@ -119,7 +119,7 @@ continuation signal, in the order the evidence points:
   (take 8 ran pad+pulse believing it ran pulse alone). `rm -rf build-bench` before each
   variable change is the discipline; the ledger above is corrected for it.
 
-## 6. The next session's opening move
+## 6. ~~The next session's opening move~~ — take 13 has now run; see §7
 
 The crash mode argues for evidence over guessing: **capture a real Pro Controller 2 amiibo
 read** with the canonical repo's own method (an nRF52840 sniffer + the extracted LTK —
@@ -128,3 +128,122 @@ of capture answers every open question at once — the push shapes, the framing 
 per-chunk cadence, the trailing region — where another evening of knob sweeps risks another
 `2011-0301`. If the hardware is unavailable, the take-13 build (the `04`-hold) is the one
 prepared, unrun experiment.
+
+---
+
+## 7. The second session (2026-10-04 12:00–12:25): take 13 runs, the crash ledger hardens, and #37's measurement stays gated
+
+**Scope:** the ticket that owns this surface's endgame — #37, the freshness measurement —
+needed the read to *complete* first, so this session ran the one prepared, unrun experiment
+(take 13, the `04`-hold) and then its corrected twin. No nRF52840 was attached, so the
+capture-first recommendation of §6 was unavailable; the sniffer-free path was exactly two
+runs. The operator stopped the bench after the second console crash, per the G-18 discipline.
+**The freshness question was not reached** — no completed read, no game bookkeeping to watch.
+
+**Setup.** The console had been unpaired console-side since the last session (the §5 lesson),
+so the device's NVS bond was stale: `esptool erase_region 0x9000 0x6000` (the `nvs`
+partition, `partitions_16mb_s3.csv`), hard reset, and the console — parked on its pairing
+screen by the operator — **re-paired on the first attempt** (§5's recovery path, now
+re-verified). Two further observations from the pairing state: the console connected and
+resubscribed within a second of the driver attach, and while it sat on the pairing screen
+consuming no input, the device logged `hid: msys low, dropped N reports` climbing ~100/s —
+benign (the queue drains the moment the console reads input), but it is what an idle-console
+attach looks like on the wire.
+
+### 7.1 The two runs
+
+Both: the register screen (设置 → amiibo → 添加所有者和昵称), the **operator's Joy-Con
+parking the cursor and the device's own `A` pressing into it** (the §2 binding rule, now
+the standing mechanics), `place` of Mario under a fresh identity, and `unplace` to force
+the trace drain. The console's cycle both times: the one-shot `0x03` probe → `0x05`
+answered `00` **during the §6.5 gap** → `0x05` answered `09` after it → `0x04` → the
+1000 ms `0x03` re-arm → `0x06` → the probes → `0x05` answered `04` → the ~3 s deadline
+→ `0x04`.
+
+| Run | Build (SHA-256 head) | The knobs | The console's answer | The screen |
+| --- | --- | --- | --- | --- |
+| A (12:14) | `2a25eae2…` | the session's rebuild of §1's take-12 set — `FOLLOWS+PUSH+STATUS_DONE+P1_PREFIX` — which had **silently lost `READ_DONE_BYTE=0x04`** to the post-review reconfigure, so the byte held `03`; no pad | `0x06` (t=91308) → **three `0x15` pulls** — `off=0040`, `0140`, `02c0` (`n=67`, `67`, **`0`** — `0x2c0` falls outside the 600 B P1-served space) → `0x05` → answered `04` → silence past the deadline | **crash** (`2011-0301`, forced reboot; the device saw the reboot as a disconnect + reconnect) |
+| B (12:20) | `d8b279ba…` | the **corrected take 13**: `FOLLOWS+PUSH+STATUS_DONE+PAD_TO=0x300+BYTE=04`, image at 0, byte **held** (`READ_DONE_MS=0`) — one variable over take 10 (the last no-crash causality build) | `0x06` (t=54419) → **the same three pulls** — `0040`, `0140`, `02c0` (now `n=67` of pad zeros) → `0x05` → answered `04` → the byte returned `04→00` at the console's clean `0x04` stop (t+3.0 s) | **crash again** (the operator watched the forced reboot; the link cycled `531`-drop/reconnect through the aftermath) |
+
+The two builds' shared mechanics: the push (status-first, then 64 B chunks across the served
+space) streamed during the console's probe window, and `STATUS_DONE_WHEN_READ` answered the
+console's `0x05` with `04` — the take-10 causality held both times (ask → `04` → the pulls
+ride inside ~125 ms of the `0x06`).
+
+### 7.2 What the two runs established
+
+1. **The byte-hold is a crash trigger in conjunction with the `04` answer — take 13's
+   variable is falsified in its own context.** Run B differs from take 10 (no crash,
+   several cycles) by exactly one knob: the done byte holds `04` instead of pulsing back
+   to `02` after 150 ms. Run A crashed with the byte held at `03`, so the *hold*, not the
+   value, is the discriminator. The first session's takes 5–7 held the byte too (the
+   pulse knob only arrived at take 8) and never crashed — but they predate the `04`
+   *answer* (take 10), so the honest statement is the **conjunction**: a byte pinned at
+   read-done *while `0x05` answers also say `04` forever* is the shape that kills, and
+   neither half alone ever did. The NS1 lifecycle's own shape agrees: after the data
+   phase the state **returns to `09`** — tag still in field — it never rests at `04`
+   (`ns1-nfc-read-decode.md` §2); two completion signals that never resolve back to
+   tag-in-field is a state the console's module does not survive. The knob's default is
+   now the pulse.
+2. **The crash ledger, consolidated — no single variable explains all of it.** Five
+   crashes across four configs: the trailer-last push order (§1 takes 11, ×2), the
+   P1-prefix content (§1 take 12 late; run A), and the byte-hold **with** the `04` answer
+   (runs A and B). The no-crash configs: takes 5–7 (byte held, no `04` answer) and takes
+   8–10 (pulse, `04` answer from take 10, image-at-0, status-first, pad from take 7).
+3. **The console's probe pattern is deterministic and independent of our variables.**
+   `0x40`, `0x140`, `0x2c0` — identical across P1/image-at-0, byte `03`/`04`, pad on/off,
+   ~30 ms apart, all within ~125 ms of the `0x06`. The third offset always falls past the
+   540 B image (and past the 600 B P1 space); with the pad it reads zeros (`n=67`),
+   without it reads nothing (`n=0`) — and the console stops asking either way, polls
+   `0x05`, takes the `04`, and rides to its deadline. **The pad/empty-answer difference is
+   not the crash discriminator** (run B crashed with the pad answering). What the console
+   is looking for at those three offsets — extent-mapping samples, HMAC-region checks,
+   reader-buffer framing — is not observable from this side, which is §6's capture case
+   restated as a measurement.
+4. **The read's furthest point is now three probes + the `04` answer, then the deadline.**
+   The continuation suspects of §3 survive unchanged: the per-chunk ready signal (weakened
+   — the `04`-hold that was its cheapest test is crash-correlated in the take-10 context,
+   so if a per-chunk signal exists it must be a *pulse*), the framing content, the
+   trailing region. One suspect is *narrowed away*: the empty-vs-zeros answer at the
+   space's edge.
+
+### 7.3 The freshness measurement this session came for — prepared, not run
+
+#37's question (does the console's per-amiibo bookkeeping key on the UID?) needs a surface
+with **console-side** bookkeeping. The register screen has none — owner and nickname live in
+the tag's own bytes, so a rotated identity re-reads the same owner and nickname; nothing
+console-side distinguishes the scans. The NS1 evidence's exact analog is a **game's
+once-per-day scan limit** (games index daily scan records by UID,
+`ns2-amiibo-path.md` §Q3), and the bench surface for that is the BotW rune this effort
+already drives (`amiibo-game-surface-bench.md` §1). The prepared protocol, for whenever the
+read gate opens:
+
+1. **Scan identity A → reward granted.** The rune path, `place` (fresh mint), the read
+   completes, the game records the scan.
+2. **Negative control — scan identity A again → refusal expected.** The *same* tag
+   re-placed byte-for-byte (`place` must therefore gain a fixed-identity or re-place form:
+   `seal()` already accepts `identity=`, so the driver-level command is the small seam).
+   A refusal here proves the day's bookkeeping is armed and keyed on *something* the same
+   identity shares.
+3. **Rotate to identity B (same figure) → scan.** Reward again ⇒ the key is the UID —
+   freshness-by-UID measured true, the design's premise lands. Refusal ⇒ the key is the
+   figure data — **the §6.8 branch opens with the evidence attached**, and #39 decides the
+   fallback.
+
+The forbidden outcome stays forbidden either way (ADR-0011): no path above serves a stored
+tag unchanged — every placement is a re-seal under the minted (or fixed-for-control)
+identity.
+
+### 7.4 Where this leaves the tickets
+
+- **The read gate still blocks #37.** Validation 5's continuation is unchanged in kind —
+  further along than any pre-push run, still short of one whole tag — and the G-18 ledger
+  now has three isolated factors and an empty prepared-experiment queue. The next move is
+  §6's capture (nRF52840 + LTK), or the §6.8 branch decision with this record attached.
+- **The §6.5 gap is compatible with the register surface's cycle** — both runs show the
+  one-shot probe's `0x05` landing in the gap (`status=00`) and the re-arm cycle proceeding
+  normally once the tag answers. Compatibility, not necessity (G-6's other half).
+- **The re-pair recovery path is re-verified** (§5's lesson, second success), and the
+  crash aftermath is characterised: the console force-reboots, the device auto-reconnects
+  and re-answers the `0x0C` probe, and an idle console then cycles a `531` drop/reconnect
+  pattern until input or sleep settles it.
