@@ -343,6 +343,21 @@ class MainTest(unittest.TestCase):
             self.assertIn("up -d", printed)
             run.assert_not_called()
 
+    def test_json_is_refused_where_there_is_no_result_to_report(self):
+        # `--json` carries the *run's* result: `--dry-run` prints a plan in text and `--stop` prints
+        # the command it ran. Ignoring the flag handed that text to a caller about to `json.load`
+        # the pipe, so the failure surfaced at the far end of it naming nothing (#44's nit).
+        for argv in (["--dry-run", "--json"], ["--stop", "--json"]):
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with unittest.mock.patch("subprocess.run") as run:
+                    with unittest.mock.patch("sys.stderr", stderr):
+                        with self.assertRaises(SystemExit) as raised:
+                            sc.main(argv)
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("--json is the run's result", stderr.getvalue())
+                run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

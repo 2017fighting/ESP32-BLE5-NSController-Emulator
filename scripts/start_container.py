@@ -35,16 +35,18 @@ file is a `devices:`-only override, and only when the committed files cannot say
 or the mounts, because those are `container/compose.yaml`'s own now.
 
 ```sh
-scripts/start_container.py                 # preflight, build, up -d, report the state
-scripts/start_container.py --no-build      # reuse the image that is already there
-scripts/start_container.py --dry-run       # print the paths, the override and the command
-scripts/start_container.py --no-device     # no device: the control link stays down
-scripts/start_container.py --stop
+python3 scripts/start_container.py              # preflight, build, up -d, report the state
+python3 scripts/start_container.py --no-build   # reuse the image that is already there
+python3 scripts/start_container.py --dry-run    # print what it would do, and stop
+python3 scripts/start_container.py --no-device  # run with no device: the control link stays down
+python3 scripts/start_container.py --stop       # §10.2's down, with the project pinned
 ```
 
-Exit codes: 0 = up and answering (or a successful `--stop`); 2 = a required host path is missing;
-3 = `docker compose` failed; 4 = the container never answered on `http://localhost:8080`, or the
-control link never came up.
+Exit codes: 0 = up and answering (or a successful `--stop`); 2 = a required host path is missing, or
+two arguments that cannot hold together (argparse's own code, with the usage line); 3 = `docker
+compose` failed; 4 = the container never answered on `http://localhost:8080`, or the control link
+never came up. `--json` carries the *run's* result, so it is refused rather than ignored where there
+is none: with `--dry-run`, whose output is the plan in text, and with `--stop`.
 
 The generated override uses Compose's `!override` tag to clear a mapping the base file sets, so
 the two modes that generate one need Compose ≥ 2.24 (the bench measured v5.1.2, §10.7).
@@ -479,7 +481,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stop", action="store_true", help="docker compose down, then exit")
     parser.add_argument("--dry-run", action="store_true", help="print the plan and run nothing")
     parser.add_argument("--json", action="store_true", help="machine-readable result")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.json and (args.dry_run or args.stop):
+        # `--json` carries the *run's* result, and neither of these has one: `--dry-run` prints a
+        # plan, `--stop` prints the command it ran. Ignoring it would hand text to a caller that is
+        # about to `json.load` the pipe, and the failure would surface at the far end of it, naming
+        # nothing (#44's review nit).
+        parser.error("--json is the run's result; --dry-run prints the plan and --stop has none")
+    return args
 
 
 def _fail(message: str, code: int) -> int:
