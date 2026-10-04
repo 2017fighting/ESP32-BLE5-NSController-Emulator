@@ -141,7 +141,7 @@ content, so the rule that applies to the key applies at least as strongly.
 ```text
 container                          device                         console
    │  PLACE_AMIIBO (540 B) ─────────►│  tag committed
-   │                                │  nfc_state → tag detected ───►│  sees a tag
+   │                                │  nfc_state → reader event ───►│  sees a tag
    │                                │                               │  0x01/0x05 status + UID
    │                                │◄──────────────────────────────│  0x01/0x15 read pages …
    │                                │  EVENT SCAN_ENDED ────────────►│  0x01/0x04 stop polling
@@ -152,11 +152,11 @@ container                          device                         console
 
 - **A placement is place → console reads → unplace → place fresh.**
 - **The device emits a tag-absent gap on every tag change**, including the atomic-replace
-  `PLACE_AMIIBO` while `AMIIBO` is active: the NFC state byte returns to `0x00` and
-  `0x01/0x05` reports no tag, before the new tag answers. **This is a design guarantee, not a
-  proven console requirement.** Something has to leave the field for repeated scanning to work
-  on NS1 (emuiibo's manual disconnect exists for exactly that), so a gap is the safe superset;
-  whether the NS2 needs it is unobserved (G-6).
+  `PLACE_AMIIBO` while `AMIIBO` is active: the NFC state byte returns to `0x00` (tag removed,
+  §4.9's counter) and `0x01/0x05` reports no tag, before the new tag answers. **This is a design
+  guarantee, not a proven console requirement.** Something has to leave the field for repeated
+  scanning to work on NS1 (emuiibo's manual disconnect exists for exactly that), so a gap is the
+  safe superset; whether the NS2 needs it is unobserved (G-6).
 - **The gap is held, not instantaneous.** The state byte is `0x00` and `0x05`/`0x15` answer
   nothing for **two report periods — 20 ms at the 10 ms grid** (`NFC_TAG_GAP_MS`,
   `main/src/controller/nfc_tag.c`) — because a gap the reporter can lose in a buffer swap is
@@ -230,18 +230,23 @@ and they are firmware changes rather than protocol changes:
   | `0x15` read buffer | `offset` u16 (LE) | `last` u8 · `len` u16 (LE) · `len` bytes of the 600-byte read buffer, ≤ 70 |
   | `0x14` write buffer | `offset` u16 (LE) · `len` u16 (LE) · `len` bytes | — (staged into the 454-byte frame below) |
   | `0x08` commit write | — | — (commits the staged frame: its records land in the volatile image and the status then answers `0x05` for the rest of the scan) |
-  | `0x05` get status | — | 61 B: status byte + the captured flags `00 00 00 01 01 02 00` + `0x07` + the 7-byte UID |
+  | `0x05` get status | — | 61 B: status byte (the lifecycle above) · detail byte · the captured flags `00 00 01 01 02 00` · `0x07` · the 7-byte UID; the post-eject answer is `07 41` and zeros |
   | `0x03`/`0x04`/`0x06` | `0x03`: 5 B poll config; `0x06`: **the read command** — marker `d0`, UID length `07`, UID (`00×7` = read any tag), `01` NTAG215-only, `03` page ranges `00–3b/3c–77/78–86` = all 135 pages (`ns1-nfc-read-decode.md` §1) | — (ACK), and its `payload[10..18]` rides the next head's `[51..59]` |
 
-  The status byte is the lifecycle channel rather than a constant — `0x09` tag in field (the
-  capture's value), `0x04` a read is armed, `0x05` a write was committed, `0x07` nothing in
-  field. That `0x05` is **scan-scoped**: `0x04` (or the placement's own end) puts it back to
+  The status byte is the lifecycle channel rather than a constant, and **it is the reader's
+  contract as of #48**: `0x09` tag in field (the capture's value) → `0x04` for as long as
+  `0x06`'s read is armed, answered as a **level** on every `0x05` of that window → back to
+  `0x09` (`0x03` or `0x04`), or `0x07` + detail `0x41` once `0x04` ends a scan whose read reached
+  the end of the served space. The flags, the `0x07` UID length and the UID keep their captured
+  positions; the detail byte is offset `1`, where the captured flags carry `0x00`. That `0x05`
+  (a committed write) is **scan-scoped**: `0x04` (or the placement's own end) puts it back to
   `0x09`, because a status that never resolves is the shape G-18's ledger isolates — a `0x03`
-  re-arm keeps it, so the console can still read back what it wrote. The **post-eject** answer
-  is one shape the capture does not carry: the second implementation answers `07` with detail
-  `41` once a scan's read has completed and `0x04` ended it, where the shipped firmware
-  collapses every non-placed state to status `0x00` with the rest zero. Whether the
-  *never-placed* answer should also be `07 41` is open (G-19).
+  re-arm keeps it, so the console can still read back what it wrote. The **post-eject** answer is
+  one shape the capture does not carry: the second implementation answers `07` with detail `41`
+  and nothing else once a scan's read has completed and `0x04` ended it, where an incomplete
+  read's stop is the tag-in-field `09`. The shipped firmware collapses every non-placed state to
+  status `0x00` with the rest zero; whether the *never-placed* answer should also be `07 41` is
+  open (G-19), and this device keeps `0x00` there.
 
 - **`0x06` decoded, and what it implies for the read gate.** The NS1 capture of the same
   exchange (`elmagnificogi_nsre`, context tier) shows the payload commands the *reader* to
@@ -253,12 +258,15 @@ and they are firmware changes rather than protocol changes:
   when `0x04` ends the scan with the read complete (`ns_pc_control/server/src/s2_nfc_codec.cpp:731-900`,
   context tier). That matches the bench's own finding exactly — **a `0x05` answer carrying `04`
   is what unlocked the first console pull** (`register-screen-bench.md`) — and the second
-  implementation needs no push at all. The value is context-tier and the capture shows only
-  `0x09`, so what §12.2 row 5 still settles is the *lifecycle*: edge or level, and how it
-  interleaves with the report byte. That is what the `NFC_TAG_READ_DONE_*` and
-  `NFC_TAG_STATUS_DONE_*` knobs are for (`nfc_tag.h`); the `0x03`-after-`0x06` guess is
-  retired. The `0x05` flags and the bare `0x06` ACK stay as weakened fallback suspects
-  (`amiibo-game-surface-bench.md` §4).
+  implementation needs no push at all. **Landed by #48:** the lifecycle is a *level* — `04` on
+  every `0x05` of the armed window, the state the console polls for — and the read completes when
+  a `0x15` serves the **final chunk of the served space** (the reference's own
+  `offset + payload_len − 3 >= buffer.size()` check, `ns_pc_control/server/src/s2_nfc_codec.cpp:837-844`,
+  context tier); the bare marker past the space does not complete it.
+  The `NFC_TAG_READ_DONE_*`/`NFC_TAG_STATUS_DONE_*` knobs are retired with it (`nfc_tag.h`), the
+  `0x03`-after-`0x06` guess was retired earlier, and the interleaving with the report byte is
+  §4.9's event counter. The `0x05` flags and the bare `0x06` ACK stay as weakened fallback
+  suspects (`amiibo-game-surface-bench.md` §4).
 - **The read pipeline opens — measured on the register screen (`register-screen-bench.md`).**
   The register screen binds its read to the controller that pressed A into it (the prompt's
   icon; #36's "console's own reader" was an artefact of the operator's own navigation), and
@@ -274,22 +282,14 @@ and they are firmware changes rather than protocol changes:
   *continuation* — the console probes three offsets deterministically (`0x40`/`0x140`/`0x2c0`),
   takes the `04`, and rides to its deadline; five frame combinations across two sessions
   **crashed the console's amiibo module** (`2011-0301`, forced reboot — the ledger and its
-  isolated factors are G-18's, §12.3; the record is `register-screen-bench.md` §3, §7). The
-  bench knobs for all of it are in the tree, the feature toggles default OFF and the value
-  knobs default to the safe shapes
-  (`nfc_tag.h`: `NFC_TAG_PUSH_READ_DATA` (status-first — the safe order), `NFC_TAG_STATUS_DONE_WHEN_READ`,
-  `NFC_TAG_STATUS_DONE_ONCE` (which refines the knob before it, the pair refusing to compile apart:
-  the done state served as an *edge* rather than a level — `04` once, then the tag-detected answer.
-  The NS1 references send that `04` once, as a trailer; the second implementation answers it as a
-  *level* for the whole read window **without crashing**, so the repeated `04` is no longer half of
-  G-18's conjunction on its own — the report byte that does not move is the newer suspect (§4.9's
-  note, `ns_pc_control/server/src/virtual_controller.cpp:195-266`); this is the one prepared, unrun
-  variable of [Bench: the read's continuation — what
-  does the console need after the first `0x15` pull?](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/45)),
-  `NFC_TAG_READ_DONE_BYTE/MS` (`MS` defaults to the pulse; the hold is the falsified variant), `NFC_TAG_READ_PAD_TO`,
-  `NFC_TAG_BUFFER_P1_PREFIX` — the last
-  serves `[60 B framing][image]`, the right *space* carrying the wrong *content* (the head's two
-  candidates are below), host-tested under its own compile).
+  isolated factors are G-18's, §12.3; the record is `register-screen-bench.md` §3, §7). The one
+  remaining bench knob is `NFC_TAG_PUSH_READ_DATA` (default OFF; status-first, the safe order —
+  the push now serves the status the lifecycle arms rather than overriding it). The knob family
+  the sessions used to pace the answer and the byte is **gone**: `NFC_TAG_STATUS_DONE_WHEN_READ`
+  and `NFC_TAG_STATUS_DONE_ONCE` are #48's landed lifecycle, `NFC_TAG_READ_DONE_BYTE`/`MS` are
+  §4.9's event counter, and `NFC_TAG_READ_PAD_TO`/`NFC_TAG_BUFFER_P1_PREFIX` were already deleted
+  by #46. The plain-offset view survives only as the host suite's comparison compile
+  (`NFC_TAG_READ_PLAIN_VIEW`).
 - **The `0x14` payload is framed, and the device stages it (#47).** The canonical write
   capture opens `d0 07 <uid7> 01 …` — write-setup framing, not image bytes at an offset — and
   the device accumulates it into a 454-byte staging frame (the capture's `4c 00` = 76, six
@@ -319,9 +319,13 @@ and they are firmware changes rather than protocol changes:
   `0F E0`, so the capture's leading `0f e0` is the image **verbatim** and the earlier "first
   16-bit word transposed" reading was wrong. The shift is a constant **60 = 0x3C**, which is
   exactly the framing head's length: the wire space *is* the 600-byte read buffer, so there is
-  no permutation and no table to invent. The open half is now the **out-of-range** case: the
-  bench's third probe (`0x2c0` = 704, beyond even 600) was answered with nothing and the cycle
-  stopped, where the second implementation answers a bare last-chunk marker `01 00 00`. The
+  no permutation and no table to invent. The **out-of-range** case is a deliberate deviation
+  from the reference: the bench's third probe (`0x2c0` = 704, beyond even 600) was answered
+  with nothing and the cycle stopped, so #46 chose the bare last-chunk marker `01 00 00`
+  instead of silence — where the second implementation *refuses* the ask (no payload, status
+  `07 41`), because its handler guards the marker path behind `offset < op_buffer.size()`
+  (`ns_pc_control/server/src/s2_nfc_codec.cpp:831-846`, context tier). The marker is not the
+  read's end (#48): only the chunk that reaches the served space's end completes a read. The
   plain-offset server (`NFC_TAG_READ_PLAIN_VIEW`, `nfc_tag.h`, default `0`) exists only as the
   host suite's comparison compile; writes address the staging stream, which the captured
   `0x14` at offset `0` confirms.
@@ -354,9 +358,9 @@ and they are firmware changes rather than protocol changes:
   narrowed (§12.3): the probe/status path is byte-neutral, the read-start gate is the untested
   half.
 - The state byte is the `nfc_state` field of `hid_report_pro2_t` (§4.9), written into both report
-  buffers by `controller_ops_t.set_nfc_state`. `STATUS.console_polling` is the server's *other*
-  output — the console's own level, which moves on `0x03`/`0x04`/`0x05` in any mode, where the byte
-  moves only on a placement. §4.9 carries why they are two signals rather than one.
+  buffers by `controller_ops_t.set_nfc_state`; §4.9 owns its values and the reader events that
+  move it (ADR-0016). `STATUS.console_polling` is the server's *other* output — the console's own
+  level, which moves on `0x03`/`0x04`/`0x05` in any mode, which §4.9 and §3.2 keep as two signals.
 
 ## 6.7 Key policy
 

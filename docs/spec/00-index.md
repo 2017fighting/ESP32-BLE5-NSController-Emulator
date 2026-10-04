@@ -49,6 +49,7 @@ the result of a real trade-off. The spec assumes them; it does not restate them.
 | [0013](../adr/0013-firmware-owns-pairing.md) | The firmware owns pairing; the container observes |
 | [0014](../adr/0014-macos-bench-path.md) | The macOS bench path is OrbStack forwarding, and the host keeps the port |
 | [0015](../adr/0015-bulk-upload-is-a-windowed-stream.md) | Bulk upload is a windowed stream, exempt from "one outstanding request" |
+| [0016](../adr/0016-the-nfc-report-byte-is-the-readers-event-counter.md) | The NFC report byte is the reader's event counter, not a placement-only vocabulary |
 
 ## Vocabulary
 
@@ -89,8 +90,9 @@ and the storage/OTA partitions (unclaimed, §7.8).
 
 ## ADR selection
 
-**Eighteen candidates** were raised across the map (the seventeenth from #17, and the
- eighteenth from #19, after the selection below was first written). They were judged against the bar — hard to
+**Nineteen candidates** were raised across the map (the seventeenth from #17, the eighteenth
+from #19, and the nineteenth from #48, after the selection below was first written). They were
+judged against the bar — hard to
 reverse, surprising without context, the result of a real trade-off — and the three that did
 not clear all three were **declined rather than written as padding**. The record, because
 "why isn't there an ADR for X" is its own question later:
@@ -112,6 +114,7 @@ not clear all three were **declined rather than written as padding**. The record
 | Firmware owns pairing (Q12) | map Q12 | **Accepted** — ADR-0013 |
 | The macOS bench path: OrbStack forwarding, with the host keeping the port | #17 | **Accepted** — ADR-0014. It clears the bar where #7's *port as configuration* did not: it has a rejected alternative with a real cost (a native venv, which would leave the container unexercised on the only bench host) and a surprising outcome (no WCH driver is needed, and `orb usb attach` is the wrong tool) |
 | Bulk upload is a windowed stream, exempt from one-outstanding | #19 | **Accepted** — ADR-0015. The byte-layout work found §2.3 and §2.7 disagreeing, and the resolution inverts a sentence a reader would otherwise take as universal (a mode verb is one request, one reply) for a real cost (256 round trips for the largest plan, against a 256-byte RX ring) |
+| The NFC report byte is the reader's event counter | #48 | **Accepted** — ADR-0016. It supersedes §4.9's placement-only byte — a statement #25 had already had corrected once — on the strength of G-18's isolated crash factor, and the sacrifice (the byte stops being a readable vocabulary) is paid to keep the one input channel the console could read a *change* from |
 | Single-process container | #7 | **Declined** — the seam that matters is the module interface (§8.2), not a process boundary; splitting later changes no protocol and no interface. Not hard to reverse |
 | The port as configuration, with Q2's literal path as the default | #7 | **Declined** — one constant to change; a reader would not wonder why. It stays a chapter rule (§8.3) rather than a decision of record |
 | `esp32-joycontrol` is untrusted (Q13) | map Q13 | **Declined** — a sourcing rule, not an architectural choice. It lives in `docs/references.md` and ADR-0005 |

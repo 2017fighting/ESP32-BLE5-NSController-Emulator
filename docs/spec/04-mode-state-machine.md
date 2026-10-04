@@ -284,18 +284,38 @@ Not protocol detail for its own sake — it is the *mechanism* behind exclusivit
 
 `hid_report_pro2_t` byte `0x0C` (`main/include/controller/hid_controller_pro2.h`, the
 `nfc_state` field) is the **NFC state**, `0x00` = idle, as documented in
-`switch2_controller_research/hid_reports.md:178`. It is `0x00` in `IDLE` and `MACRO` and `0x02`
-while a tag is placed in `AMIIBO`, and it is driven only by a placement or unplacement
-(`nfc_tag.c` → `controller_ops_t.set_nfc_state`, into both report buffers). **That is what makes
+`switch2_controller_research/hid_reports.md:178`. `0x00` is the whole of `IDLE` and `MACRO`, the
+§6.5 gap and a post-eject read (§6.6): it means **no tag in the reader's field**. While a tag is
+in that field the byte is the **reader's event counter**, `0x01`–`0x07`, advanced once on each of
+the reader's five events — tag presented, scan ready (`0x03`), operation ready (`0x06`), write
+complete (`0x08`), tag removed — and wrapping `0x07 → 0x01` rather than through the reserved
+`0x00`. The tag-removed event advances the counter *and* leaves the byte at `0x00`, because it is
+the event that empties the field (`nfc_tag.c` → `controller_ops_t.set_nfc_state`, into both
+report buffers). **That is what makes
 it the mode's physical expression** and why `AMIIBO` is the only mode that drives it — a console
 that polls in `IDLE` or `MACRO` moves `STATUS.console_polling` and must not touch the byte.
+
+**Amended by #48, and why.** The byte was placement-only — `0x00`/`0x02`, written only by a
+placement — until G-18's ledger isolated the shape that kills the console's amiibo module: a
+byte **held** at one value across a whole armed read, together with a `0x05` answer that always
+says `04` (`register-screen-bench.md` §7). The second implementation does both halves the other
+way — it answers that `04` as a *level* **and** drives this byte as an event counter,
+`(previous + 1) & 0x07`, on exactly those five events
+(`ns_pc_control/server/src/virtual_controller.cpp:195-266`, context tier) — and reports no crash.
+With the read's completion carried on the `0x05` answer (§6.6), the input report's byte is the
+only remaining channel the console can read a *change* from, so it carries the reader's sequence:
+`hid_reports.md:178`'s `0x00`–`0x07` range read as a *sequence* rather than a vocabulary. The one
+difference from the reference is the wrap — `0x07 → 0x01`, so `0x00` is never on the wire while
+the reader has a tag in the field and the exclusivity argument below survives the amendment
+intact (ADR-0016).
 
 **The byte and `console_polling` are one vocabulary and two signals (settled by #25).** Both use
 `IDLE`/`POLLING`/`TAG_DETECTED` (§3.2), but they are read from different sides:
 
-- The **byte** says what the *device* is doing — `0x00` unless a tag is placed. Its reachable
-  values are therefore `0x00` and `0x02`; `0x01` is legal in the vocabulary and never on the wire,
-  because a tag being placed is the only `AMIIBO` state.
+- The **byte** says what the *device* is doing — `0x00` only while the reader's field is empty
+  (no placement, the §6.5 gap, or a post-eject read), and the reader's event counter while a tag
+  is in the field. `0x00` therefore cannot be mistaken for `IDLE`: the placement's own first
+  advance moves the byte off it, and the wrap skips it.
 - **`console_polling`** says what the *console* is doing — `0x03` sets `POLLING`,
   `0x05` asks again, `0x04` returns it to `IDLE`. A game can open its amiibo menu while the device
   is in `IDLE` or `MACRO`, so it cannot be gated on the mode, and §3.2's rotation key reads it.
@@ -314,16 +334,12 @@ Consequences worth writing down:
   and it is in the report the console samples every ~15 ms. "Only one at a time" is a property
   of the wire rather than a policy the device enforces.
 - It fixes the console-observability of a mode change at within one report interval.
-- The field's name is `nfc_state` rather than `unknown_0x0c` as of #25, and the value semantics
-  are the earlier NFC research's (`0x01` polling, `0x02` tag detected) — the low three values of
-  `switch2_controller_research/hid_reports.md:178`'s `0x00`–`0x07` range, given meaning.
-- **The byte's *change*, not only its value, may be what the console reads** (context tier,
-  recorded before the next bench). The second NS2 implementation drives this byte as an **event
-  counter** — `(previous + 1) & 0x07`, advanced on tag-presented / scan-ready / operation-ready /
-  write-complete / tag-removed, never resting on one value through a read
-  (`ns_pc_control/server/src/virtual_controller.cpp:195-266`). That reads
-  `hid_reports.md:178`'s `0x00`–`0x07` range as a *sequence* rather than a vocabulary, and it is
-  the one explanation this chapter has for the benchmark's darkest fact: G-18's isolated crash
-  factor is a byte **held** at a single value across a whole read window, while every run that let
-  it move survived. Nothing here changes until a bench says so — the closed vocabulary stands —
-  but that session has to decide the byte's *shape*, not only its value.
+- The field's name is `nfc_state` rather than `unknown_0x0c` as of #25. Its *values* are the
+  reader's counter (§4.9); the earlier NFC research's `0x01` polling / `0x02` tag-detected reading
+  of `switch2_controller_research/hid_reports.md:178` is `STATUS.console_polling`'s vocabulary
+  (§3.2), which is the console's own level rather than the device's activity.
+- **The byte's *change* is what the reader carries** (amended by #48, ADR-0016). It is the event
+  counter of the paragraph above — tag-presented, scan-ready, operation-ready, write-complete,
+  tag-removed — and never rests on one value across a read window, which is exactly the factor
+  G-18's ledger isolates as the crash shape when it is held. Nothing is read *from* the counter's
+  value: `0x00` is the only value with a meaning (no tag in the field).

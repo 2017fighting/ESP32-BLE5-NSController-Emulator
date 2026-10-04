@@ -65,7 +65,8 @@ Exactly one of three, and `IDLE` is the *absence* of a mode rather than a third 
 
 Modes cannot overlap, and the reason is physical rather than policed: HID input report
 `0x09` byte `0x0C` is the console's view of NFC state, and it is `0x00` in `IDLE` and
-`MACRO` and driven only in `AMIIBO`. There is one byte to express a mode, and the console
+`MACRO` and non-zero (`0x01`–`0x07`) only while `AMIIBO` presents a tag — §4.9 owns the value
+it carries there. There is one byte to express a mode, and the console
 samples it every report.
 
 ## 1.5 What each half owes the other

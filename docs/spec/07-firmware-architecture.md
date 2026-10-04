@@ -75,7 +75,8 @@ discipline ADR-0006 implies: the framing knows about the noise, the transport do
    for its `hold_ms`, calls `controller_hid_commit`, and on every exit path emits the neutral
    template (§4.6). It owns the loop-boundary neutral and the `LOOP_COMPLETED` rate limit
    (§3.3).
-6. **The NFC state machine and tag server** — **done with #25.** `main/src/controller/
+6. **The NFC state machine and tag server** — **done with #25, the reader's lifecycle and
+   event-counter byte with #48.** `main/src/controller/
    nfc_tag.c` drives HID report `0x09` byte `0x0C` (§4.9, now `nfc_state`) and answers
    `0x01/0x03`, `0x01/0x04`, `0x01/0x05`, `0x01/0x06`, `0x01/0x08`, `0x01/0x14`, `0x01/0x15`.
    The device is a byte server: it slices a RAM buffer and does no crypto (ADR-0011) — 60 bytes
