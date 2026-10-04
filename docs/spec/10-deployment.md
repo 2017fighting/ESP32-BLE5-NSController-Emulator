@@ -89,9 +89,11 @@ four flags is a copy-paste hazard every time. The `docker run` equivalent ships 
 one person will always want it.
 
 **Two files are committed, not one.** `container/compose.yaml` is the Linux canonical form
-shown below. `container/compose.macos.yaml` is an override that changes **only** the `devices:`
-mapping, so the platform difference is versioned rather than buried in prose. It takes the host
-node from `$NS2_PORT` rather than naming it, because the macOS node is host-specific and must
+shown below: the block is the file's `services:` section byte for byte, and
+`container/tests/test_compose.py` fails if the two ever part. The file's own header comments
+sit above `services:` in the file itself and are not repeated here.
+`container/compose.macos.yaml` is an override that changes **only** the `devices:` mapping, so
+the platform difference is versioned rather than buried in prose. It takes the host node from `$NS2_PORT` rather than naming it, because the macOS node is host-specific and must
 be resolved, not guessed (§10.7):
 
 > Compose merges `devices:` **per container-side target**: an entry with the same target replaces
@@ -114,7 +116,10 @@ Either way the container sees `/dev/ttyACM0`.
 ```yaml
 services:
   controller:
-    image: ghcr.io/<owner>/ns2-controller:latest
+    build:
+      context: ..
+      dockerfile: container/Dockerfile
+    image: ${NS2_IMAGE:-ghcr.io/2017fighting/ns2-controller:latest}
     devices:
       - /dev/ttyACM0:/dev/ttyACM0
     volumes:
@@ -125,6 +130,23 @@ services:
       - "8080:8080"
     restart: unless-stopped
 ```
+
+**`image:` is a substitution, and its default is the published name.** With `NS2_IMAGE`
+unset the build tags `ghcr.io/2017fighting/ns2-controller:latest`, so a host that has never
+pulled the image builds its own and `up` finds what it built, with no hand-tagging step;
+`NS2_IMAGE=ns2-controller:dev docker compose … up --build` pins a bench tag instead. The
+`<owner>` this line carried is not in Docker's reference character set, and Compose hands
+`image:` to the builder as `-t`, so the committed file could not build its own image at all.
+The research record the block came from (`container-and-web-ui.md` §4) carries the literal
+`ghcr.io/2017fighting/ns2-controller:latest` and is **left as written** — a research record
+is the evidence trail, not the specification (§00) — which is why that is the default rather
+than a fresh local name.
+
+**The two `docker run` lines below keep the `<owner>` placeholder**: they are lines a reader
+types and substitutes by hand, where the name is a value to replace, and `NS2_IMAGE` is the
+compose spelling of that same substitution. Replacing it there is not optional — the line as
+written never reaches Docker. `<` and `>` are redirections to the shell, which stops at
+`owner: No such file or directory`.
 
 ```sh
 docker run --rm -it \

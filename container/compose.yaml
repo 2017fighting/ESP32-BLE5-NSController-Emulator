@@ -13,6 +13,15 @@
 #   docker compose -f container/compose.yaml \
 #                  -f container/compose.macos.yaml up                # macOS (ADR-0014)
 #
+# `image:` is a Compose substitution whose default is the published name, so a host that
+# has never pulled anything builds an image `up` then finds — no hand-tagging step. A bench
+# tag is pinned by setting the variable (§10.4, issue #42):
+#
+#   NS2_IMAGE=ns2-controller:dev docker compose -f container/compose.yaml up --build
+#
+# The `<owner>` this line used to carry is not in Docker's reference character set, and
+# Compose hands `image:` to the builder as `-t`, so the build died before it started.
+#
 # The single port is passed through; never --privileged (§10.4).
 
 services:
@@ -20,7 +29,7 @@ services:
     build:
       context: ..
       dockerfile: container/Dockerfile
-    image: ghcr.io/<owner>/ns2-controller:latest
+    image: ${NS2_IMAGE:-ghcr.io/2017fighting/ns2-controller:latest}
     devices:
       - /dev/ttyACM0:/dev/ttyACM0
     volumes:
