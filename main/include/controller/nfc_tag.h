@@ -25,14 +25,35 @@
  * produces:
  *
  *  - `nfc_tag_state()` — the **report byte**, HID input report `0x09` offset
- *    `0x0C`. It is the mode's physical expression, so it is `0x02` while a tag is
- *    placed and `0x00` otherwise. It moves only on `place`/`unplace`; a console
- *    that polls while the device is in `IDLE` or `MACRO` changes nothing here,
- *    which is what keeps "only one mode at a time" a property of the wire.
+ *    `0x0C`. It is the mode's physical expression: `0x00` while nothing is in
+ *    the field (no tag, or the §6.5 gap), and the **reader's event counter**
+ *    while a tag is placed — `0x01`–`0x07`, advanced on every reader event
+ *    (tag presented, scan ready `0x03`, operation ready `0x06`, write complete
+ *    `0x08`, tag removed) and wrapping `0x07 → 0x01` so that `0x00` stays
+ *    reserved for "no tag in field" (amended by #48; §4.9 carries the rule and
+ *    the reference evidence). A console that polls while the device is in
+ *    `IDLE` or `MACRO` still changes nothing here, which is what keeps "only one
+ *    mode at a time" a property of the wire.
  *  - `nfc_tag_polling()` — `STATUS.console_polling`, the console's own level
  *    (`IDLE`/`POLLING`/`TAG_DETECTED`). It moves on the console's `0x03`/`0x04`/
  *    `0x05` regardless of mode, because a game may open its amiibo menu at any
  *    time, and the container rotates on its fall to `IDLE` (§3.2, §6.5).
+ *
+ * **The status answer is the reader's lifecycle (#48).** The `0x05` answer's
+ * first byte is the state, and its second is the detail byte the captured flags
+ * carry as `0x00`:
+ *
+ *  - `0x09` — a tag is in the field and nothing is armed (the capture's value);
+ *  - `0x04` — `0x06`'s read is armed, answered as a **level** on every ask of
+ *    the window (the NS2 translation of the NS1 P3 trailer, and the answer the
+ *    bench measured unlocking the console's first `0x15` pull);
+ *  - `0x05` — a `0x08` commit landed, scan-scoped until `0x04` ends it;
+ *  - `0x07` + detail `0x41` — **post-eject**: `0x04` ended a scan whose read
+ *    had reached the end of the served space, so the field is empty for the
+ *    rest of the placement. A `0x04` after an incomplete read answers `0x09`.
+ *
+ * Whether the *never-placed* answer should also be `0x07 41` is open (G-19);
+ * this module keeps answering `0x00` there.
  *
  * Collapsing the two would either lie about the mode or lose the container's
  * rotation edge; keeping them separate is why a `POLLING` byte value is legal in
@@ -96,52 +117,23 @@ extern "C" {
 #define NFC_TAG_READ_OP_OFFSET 10u
 #define NFC_TAG_READ_OP_SIZE 9u
 
-/* The #39 game-surface bench's one firmware question (#36's record §4): does
- * the console's read flow require the report byte to follow the *reader's*
- * lifecycle — `0x01` while the console polls, `0x02` when the tag is detected
- * — rather than §4.9's placement-only byte (`0x00`/`0x02`, never `0x01`)?
- * Both of §12.2 row 4's orderings errored with the placement-only byte: the
- * console polled (`0x03`), was told a tag existed (`0x05`→`09`+UID), and
- * aborted with the game's read-error chime before any `0x06`/`0x15`. This knob
- * makes the byte the polling level's image (IDLE→0x00, POLLING→0x01,
- * TAG_DETECTED→0x02 — the enum's own values), written from the 10 ms tick so
- * every polling edge reaches the wire. Default OFF: §4.9's split stands until
- * this bench says otherwise. */
-#ifndef NFC_TAG_BYTE_FOLLOWS_POLLING
-#define NFC_TAG_BYTE_FOLLOWS_POLLING 0
-#endif
-
-/* The byte's value while `0x06`'s read is armed (#39's suspect 2, now with the
- * NS1 decode behind it): a real controller reports the read's *completion* on
- * its status channel, and the NS1 capture of the whole exchange ends the data
- * phase with state `0x04` — the `2a 00 05 00 00 09 31 04 …` trailer after the
- * two pushed data packets (`elmagnificogi_nsre` `nfc_debug/output_receive.txt`,
- * the same trailer Poohl's `mcu.py` queues). The NS2 replaced the push with the
- * console's `0x15` pulls, and the input report's NFC byte (values 0x00–0x07)
- * is the only completion signal left in the input stream — so the bench's
- * first try is `0x04` (read done), replacing the earlier blind `0x03` guess.
- * A *value* knob, not an on/off one: the default `0x03` preserves the #39
- * build's behaviour (nothing changes unless a bench build overrides it), and
- * `0` would mean idle — which is `NFC_TAG_BYTE_FOLLOWS_POLLING`'s own domain. */
-#ifndef NFC_TAG_READ_DONE_BYTE
-#define NFC_TAG_READ_DONE_BYTE 0x03u
-#endif
-
-/* The read-done state the push's opening status and the `0x05` answer
- * lifecycle carry: `04`, the NS1 read-complete value (`ns1-nfc-read-decode.md`
- * §2). */
-#ifndef NFC_TAG_READ_DONE_STATE
-#define NFC_TAG_READ_DONE_STATE 0x04u
-#endif
+/* §4.9's report byte while a tag is placed (#48): the reader's event counter.
+ * `0x00` is reserved for "no tag in field", so the counter runs `0x01`–`0x07`
+ * and wraps `0x07 → 0x01` rather than through zero. The reference's own byte is
+ * `(previous + 1) & 0x07` on the same events (`virtual_controller.cpp:195-266`,
+ * context tier); the reserved zero is this device's addition, and it is what
+ * keeps §4.9's "only one mode at a time" claim true after the amendment. */
+#define NFC_REPORT_COUNTER_MIN 0x01u
+#define NFC_REPORT_COUNTER_MAX 0x07u
 
 /* The whole-tag push after `0x06` (the register-screen session, 2026-10-04):
  * with the byte at `0x04` and a full-log tee, the console sent *nothing* for
  * the whole 3.0 s window (`d0 07` reads as a 2000 ms deadline) — it waits for
  * a device-initiated notification, and pushing the whole tag as `0x15`-shaped
  * notifications is what unlocked its own `0x15` pulls, the first ever
- * observed. The push opens with the read-done status (`NFC_TAG_READ_DONE_
- * STATE`) and follows with 70-byte chunks of the served space; the
- * *closing*-trailer order is the one that crashed the console twice
+ * observed. The push opens with the status answer (`0x06` has armed the read by
+ * then, so it is the `04` level) and follows with 70-byte chunks of the served
+ * space; the *closing*-trailer order is the one that crashed the console twice
  * (`2011-0301`, G-18), so the tree builds the safe order. A status-only push
  * variant existed and was falsified — the console drops unsolicited sub-0x05
  * frames — and was removed from the tree (the record: `register-screen-bench.md`
@@ -149,66 +141,6 @@ extern "C" {
  * take the normal response path. */
 #ifndef NFC_TAG_PUSH_READ_DATA
 #define NFC_TAG_PUSH_READ_DATA 0
-#endif
-
-/* The `0x05` answer's lifecycle (register-screen session, cycle 4): the console
- * re-asks `0x05` with repeats through the whole read window — it is polling
- * for the read to complete — and the NS1 lifecycle carries that on the status
- * line's state byte (`09` tag → `04` read done). The 04-as-a-push variant was
- * discarded as unrequested; this knob flips the *answer* to a pending `0x05`
- * to `NFC_TAG_READ_DONE_STATE` once the armed read's data has been
- * served, back to `09` on the next poll cycle. Default OFF. */
-#ifndef NFC_TAG_STATUS_DONE_WHEN_READ
-#define NFC_TAG_STATUS_DONE_WHEN_READ 0
-#endif
-
-/* Whether that done answer is a **level** or an **edge** (#45's Route 1 — the
- * read's continuation).
- *
- * The knob above answers `04` to *every* ask until the console's next `0x03`.
- * Every reference serves it as an edge: in `poohl_joycontrol`'s
- * `joycontrol/mcu.py` a read's `04` appears exactly once, in the P3 trailer
- * after the pushed data, and the status answers carry `POLL`/`POLL_AGAIN`
- * (`01`/`09`) and never `04` (the write flow's `04` is a counter-bounded
- * transient). G-18's ledger points the same way — a completion signal that
- * never resolves back to tag-in-field is the shape that crashes the console's
- * amiibo module (`register-screen-bench.md` §7.2, where the pinned *byte* and
- * the repeated `04` answer are the conjunction that killed it).
- *
- * ON: `04` once, then the normal tag-detected answer for the rest of the poll
- * cycle. Default OFF, because the level is what takes 5–10 ran and this is the
- * single variable a bench build flips. It refines the knob above rather than
- * standing alone, and refuses to build without it instead of compiling into a
- * silently inert configuration — a take has already been lost to an inherited
- * flag (`register-screen-bench.md` §5). */
-#ifndef NFC_TAG_STATUS_DONE_ONCE
-#define NFC_TAG_STATUS_DONE_ONCE 0
-#endif
-#if NFC_TAG_STATUS_DONE_ONCE && !NFC_TAG_STATUS_DONE_WHEN_READ
-#error "NFC_TAG_STATUS_DONE_ONCE refines NFC_TAG_STATUS_DONE_WHEN_READ's lifecycle; define both"
-#endif
-
-/* How long the read-done byte is held before the byte returns to the tag-
- * present `0x02` (register-screen session, cycle 3): the NS1 lifecycle ends
- * its read at `04` only *between* the data phase and the return to `09`
- * (tag still in field) — the console's asks land in the first ~120 ms after
- * `0x06`, then it waits out its ~3 s deadline, which smells like a console
- * blocked on the byte returning.
- *
- * **FALSIFIED as a hold (register-screen-bench.md §7.1, run B):** holding the
- * done byte (`0`) crashed the console (`2011-0301`) against take 10's no-crash
- * sibling with the hold as the *single* variable — and run A crashed identically
- * with the byte held at `03`, so the hold, not the value, is the discriminator.
- * The first session's takes 5–7 held the byte without crashing, but they predate
- * the `04` answer (`NFC_TAG_STATUS_DONE_WHEN_READ`, take 10) — the trigger is the
- * conjunction: a byte pinned at read-done *while `0x05` answers also say `04`
- * forever*. The NS1 lifecycle's own shape is the pulse: after the data phase the
- * state returns to `09` (tag in field), it never rests at `04`. The default is
- * therefore the 150 ms pulse; `0` (hold until the console restarts or stops
- * polling) is retained only as the falsified variant a bench build must now ask
- * for by name. */
-#ifndef NFC_TAG_READ_DONE_MS
-#define NFC_TAG_READ_DONE_MS 150
 #endif
 
 /* §6.1/§6.3: the identity is the seven-byte NFC UID. */
@@ -225,19 +157,28 @@ extern "C" {
  * needing the gap, not about whether this device emits one. */
 #define NFC_TAG_GAP_MS 20u
 
-/* §4.9/§3.2: one vocabulary for the report byte and for `console_polling`. The
- * byte's reachable values are `IDLE` and `TAG_DETECTED`. */
+/* §3.2's `console_polling` vocabulary — the console's own level, and the only
+ * thing the enum names. The HID report byte is no longer a vocabulary (§4.9):
+ * `0x00` is "no tag in the field" and `0x01`–`0x07` are the reader's event
+ * counter, so `NFC_STATE_TAG_DETECTED` must not be compared against it. */
 enum {
-    NFC_STATE_IDLE = 0,         /* no tag placed / the console is not asking */
-    NFC_STATE_POLLING = 1,      /* the console is asking, no tag placed */
-    NFC_STATE_TAG_DETECTED = 2, /* a tag is placed and answering */
+    NFC_STATE_IDLE = 0,         /* no tag in the field / the console is not asking */
+    NFC_STATE_POLLING = 1,      /* the console is asking, no tag in the field */
+    NFC_STATE_TAG_DETECTED = 2, /* the console is asking and a tag is answering */
 };
 
-/* §3.3's `0x05` first byte: `0x09` = tag detected, `0x00` = no tag, `0x05` = a
- * write was committed and the console has not ended the scan yet. */
+/* §6.6's `0x05` answer bytes, the status lifecycle (#48): `0x09` = tag in
+ * field, `0x04` = a read is armed, `0x05` = a write was committed and the
+ * console has not ended the scan yet, `0x00` = no tag (the never-placed answer,
+ * which G-19 leaves open), and `0x07` + detail `0x41` = post-eject. The first
+ * byte is the status the console reads; the second is the detail byte the
+ * captured flags carry as `0x00`. */
 #define NFC_STATUS_TAG_DETECTED 0x09u
 #define NFC_STATUS_NO_TAG 0x00u
+#define NFC_STATUS_READ_ARMED 0x04u
 #define NFC_STATUS_WRITE_COMMITTED 0x05u
+#define NFC_STATUS_EJECTED 0x07u
+#define NFC_STATUS_EJECTED_DETAIL 0x41u
 
 /* §6.6's G-17 frame: the `0x14` chunks fill a 454-byte staging stream (the
  * capture's `4c 00` = 76, six chunks), and `0x08` commits it. Coverage is a
@@ -275,8 +216,11 @@ enum {
  */
 typedef struct {
     void *ctx;
-    /* The report byte changed: write it into the HID report (§4.9). Fires only
-     * on `place`/`unplace`, because only those move the byte. */
+    /* The report byte changed: write it into the HID report (§4.9). Fires on
+     * each of the reader's five events — tag presented (a placement or the gap's
+     * close), scan ready (`0x03`), operation ready (`0x06`), write complete
+     * (`0x08`) and tag removed (an unplacement, or the `0x04` that ejects a
+     * completed read) — and on the gap's open, which is a tag-removed event. */
     void (*state_changed)(void *ctx, uint8_t state);
     /* The console stopped asking for a tag (§3.3 `SCAN_ENDED`, §6.5) — the
      * container's cue to mint and push the next identity. */
@@ -298,12 +242,18 @@ typedef struct {
         bool active;
         bool committed;
     } write;
+    /* §6.6's status lifecycle (#48), the `0x05` answer's state and detail bytes:
+     * `0x09` tag in field, `0x04` a read is armed, `0x07` + `0x41` post-eject.
+     * `write.committed` carries the `0x05` write state, which is scan-scoped. */
+    struct {
+        bool armed;         /* `0x06` armed the read; `0x03`/`0x04` end it */
+        bool read_complete; /* a `0x15` reached the end of the served space */
+        bool ejected;       /* post-eject: `0x04` ended a completed read */
+    } lifecycle;
     bool placed;     /* the tag is answering reads */
-#if NFC_TAG_STATUS_DONE_WHEN_READ
-    bool read_done;  /* the armed read has been served: `0x05` answers 04 */
-#endif
     bool staged;     /* a replacement's bytes are committed and the gap is open */
-    uint8_t state;   /* the report byte: NFC_STATE_IDLE or NFC_STATE_TAG_DETECTED */
+    uint8_t counter; /* the reader-event counter behind `state` (0x01–0x07) */
+    uint8_t state;   /* the report byte: 0x00, or the counter while a tag is placed */
     uint8_t polling; /* the console's level: NFC_STATE_IDLE/POLLING/TAG_DETECTED */
     uint32_t gap_until_ms;
     nfc_tag_events_t events;
@@ -349,13 +299,10 @@ uint8_t nfc_tag_state(const nfc_tag_t *nfc);
 /* `STATUS.console_polling` (§3.2): the console's own level. */
 uint8_t nfc_tag_polling(const nfc_tag_t *nfc);
 
+/* §6.6: a placement is committed and its bytes are in RAM. A completed read's
+ * `0x04` ejects it from the *reader's* field — `0x05` then answers `07 41` and
+ * `0x15` answers nothing — until the next placement. */
 bool nfc_tag_placed(const nfc_tag_t *nfc);
-
-#if NFC_TAG_STATUS_DONE_WHEN_READ
-/* Mark the armed read as served (or clear it): `0x05` answers flip to the
- * read-done state until the next poll cycle. See `nfc_tag.h`'s knob. */
-void nfc_tag_set_read_done(nfc_tag_t *nfc, bool done);
-#endif
 
 /* §6.3: `UID[0..2]` then `UID[3..6]`, skipping the `BCC0` check byte at byte 3. */
 void nfc_tag_identity(const nfc_tag_t *nfc, uint8_t out[NFC_TAG_UID_SIZE]);

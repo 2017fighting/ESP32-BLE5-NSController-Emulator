@@ -100,14 +100,6 @@ static uint32_t s_drops_at_open;
  * not lock-holding time. */
 static volatile bool s_nfc_flush_pending;
 
-#if NFC_TAG_BYTE_FOLLOWS_POLLING
-static bool s_nfc_reading;
-#if NFC_TAG_READ_DONE_MS != 0
-/* When the read-done byte was raised (`control_now_ms` clock), so the tick
- * can return it to the tag-present `0x02` after `NFC_TAG_READ_DONE_MS`. */
-static uint32_t s_nfc_reading_since;
-#endif
-#endif
 #if NFC_TAG_PUSH_READ_DATA
 /* One-shot: set when an `0x06` read command arms, drained by the 10 ms tick
  * as one paced notification per tick — the NS2 translation of the NS1 P1/P2/P3
@@ -583,16 +575,9 @@ static void control_pair_unpair_effect(void *ctx)
 static void nfc_state_changed(void *ctx, uint8_t state)
 {
     (void)ctx;
-#if NFC_TAG_BYTE_FOLLOWS_POLLING
-    /* The bench build's single writer is the 10 ms tick (below); the
-     * placement-driven write would fight it with §4.9's value. */
-    (void)state;
-    return;
-#else
     if (g_hid_controller.ops != NULL && g_hid_controller.ops->set_nfc_state != NULL) {
         g_hid_controller.ops->set_nfc_state(&g_hid_controller, state);
     }
-#endif
 }
 
 /* The same write, forced: used where the HID report has just been re-initialised
@@ -601,14 +586,7 @@ static void nfc_state_changed(void *ctx, uint8_t state)
 static void nfc_assert_state_byte(void)
 {
     if (g_hid_controller.ops != NULL && g_hid_controller.ops->set_nfc_state != NULL) {
-#if NFC_TAG_BYTE_FOLLOWS_POLLING
-        g_hid_controller.ops->set_nfc_state(&g_hid_controller,
-                                            s_nfc_reading
-                                                ? NFC_TAG_READ_DONE_BYTE
-                                                : nfc_tag_polling(&s_control.nfc));
-#else
         g_hid_controller.ops->set_nfc_state(&g_hid_controller, nfc_tag_state(&s_control.nfc));
-#endif
     }
 }
 
@@ -674,38 +652,20 @@ static void control_executor_task(void *arg)
          * report period to sample the absent field. One tick late is an observed
          * deadline, never an extended gap. */
         nfc_tag_tick(&s_control.nfc, now_ms);
-#if NFC_TAG_BYTE_FOLLOWS_POLLING
-        /* The #39 bench knob: the byte is the polling level's image, written on
-         * every change from this tick so the console sees `0x01` the moment it
-         * starts polling and the `0x01→0x02` edge when its own `0x05` reports
-         * the tag. One writer, one clock — and one line per change, because the
-         * byte's live value is otherwise a guess (#39's lesson: the console
-         * waited 3 s after `0x06` and nothing said what it had seen). */
+        /* §4.9 (#48): the report byte is the reader's own event counter and the
+         * portable module is its one writer, so the tick only *samples* it. One
+         * INFO line per change, outside the lock, because the byte's live value
+         * is otherwise a guess (#39's lesson: the console waited 3 s after
+         * `0x06` and nothing said what it had seen). */
+        const uint8_t nfc_byte = nfc_tag_state(&s_control.nfc);
+        control_ctl_unlock();
         {
-            static uint8_t s_nfc_byte_written = 0xffu;
-#if NFC_TAG_READ_DONE_MS != 0
-            /* The done byte is a pulse, not a level: after
-             * `NFC_TAG_READ_DONE_MS` the byte returns to the tag-present `0x02`
-             * — the NS1 lifecycle's return to `09` after the data phase. */
-            if (s_nfc_reading &&
-                (int32_t)(now_ms - s_nfc_reading_since) >= NFC_TAG_READ_DONE_MS) {
-                s_nfc_reading = false;
-            }
-#endif
-            uint8_t byte = s_nfc_reading
-                               ? NFC_TAG_READ_DONE_BYTE
-                               : nfc_tag_polling(&s_control.nfc);
-            if (byte != s_nfc_byte_written) {
-                ESP_LOGI("control", "nfc byte: %02x -> %02x", s_nfc_byte_written, byte);
-                s_nfc_byte_written = byte;
-                if (g_hid_controller.ops != NULL &&
-                    g_hid_controller.ops->set_nfc_state != NULL) {
-                    g_hid_controller.ops->set_nfc_state(&g_hid_controller, byte);
-                }
+            static uint8_t s_nfc_byte_logged = 0xffu;
+            if (nfc_byte != s_nfc_byte_logged) {
+                ESP_LOGI("control", "nfc byte: %02x -> %02x", s_nfc_byte_logged, nfc_byte);
+                s_nfc_byte_logged = nfc_byte;
             }
         }
-#endif
-        control_ctl_unlock();
         /* #36: the NFC trace's deferred readout, on the tick after the edge that
          * owed it — see `s_nfc_flush_pending`. */
         if (s_nfc_flush_pending) {
@@ -761,14 +721,6 @@ void control_parser_init(void)
     nfc_tag_init(&s_control.nfc);
     nfc_trace_init(&s_control.nfc_trace);
     s_nfc_flush_pending = false;
-#if NFC_TAG_BYTE_FOLLOWS_POLLING
-    s_nfc_reading = false;
-    /* The bench build identifies itself on the console — the knob's values are
-     * the experiment, and a flashed build whose variant is a guess is a wasted
-     * bench session (#39's lesson). */
-    ESP_LOGI("control", "nfc bench knob: byte follows polling, read done=%02x",
-             (unsigned)NFC_TAG_READ_DONE_BYTE);
-#endif
     const nfc_tag_events_t nfc_events = {
         .ctx = NULL,
         .state_changed = nfc_state_changed,
@@ -877,17 +829,6 @@ size_t control_nfc_command(uint8_t subcmd, const uint8_t *payload, size_t len, u
         s_nfc_notify_pending = false;
     }
 #endif
-#if NFC_TAG_BYTE_FOLLOWS_POLLING
-    if (subcmd == NFC_CMD_READ_DEVICE &&
-        nfc_tag_polling(&s_control.nfc) == NFC_STATE_TAG_DETECTED) {
-        s_nfc_reading = true;
-#if NFC_TAG_READ_DONE_MS != 0
-        s_nfc_reading_since = control_now_ms();
-#endif
-    } else if (subcmd == NFC_CMD_START_POLLING || subcmd == NFC_CMD_STOP_POLLING) {
-        s_nfc_reading = false;
-    }
-#endif
     if (subcmd == NFC_CMD_STOP_POLLING) {
         s_nfc_flush_pending = true;
     }
@@ -926,16 +867,16 @@ static size_t control_nfc_one_push(uint8_t *sub_out, uint8_t *payload, size_t ca
     size_t n = 0;
     uint8_t sub = NFC_CMD_READ_BUFFER;
     if (s_push_status_first) {
-        /* The opening frame is the read-done status (the NS1 P3 trailer's
-         * bytes); the *closing* variant — chunks first, trailer last — is the
-         * one that crashed the console twice (`2011-0301`, takes 11–12 of the
-         * register-screen ledger), so the safe order is what the tree builds. */
+        /* The opening frame is the status answer (the NS1 P3 trailer's bytes).
+         * `0x06` armed the read, so the tag server answers the `04` level itself —
+         * no override, and no second completion signal to contradict the
+         * lifecycle (§6.6, #48). The *closing* variant — chunks first, trailer
+         * last — is the one that crashed the console twice (`2011-0301`, takes
+         * 11–12 of the register-screen ledger), so the safe order is what the
+         * tree builds. */
         s_push_status_first = false;
         sub = NFC_CMD_GET_STATUS;
         n = nfc_tag_command(&s_control.nfc, NFC_CMD_GET_STATUS, NULL, 0, data, sizeof(data));
-        if (n == NFC_STATUS_RESPONSE_SIZE && data[0] == NFC_STATUS_TAG_DETECTED) {
-            data[0] = (uint8_t)NFC_TAG_READ_DONE_STATE;
-        }
     } else if (s_push_off < NFC_TAG_SERVED_SIZE) {
         uint8_t req[2] = { (uint8_t)(s_push_off & 0xFFu), (uint8_t)(s_push_off >> 8) };
         n = nfc_tag_command(&s_control.nfc, NFC_CMD_READ_BUFFER, req, sizeof(req),
@@ -944,14 +885,10 @@ static size_t control_nfc_one_push(uint8_t *sub_out, uint8_t *payload, size_t ca
     }
     if (n == 0 || (!s_push_status_first && s_push_off >= NFC_TAG_SERVED_SIZE)) {
         s_nfc_notify_pending = false;
-#if NFC_TAG_STATUS_DONE_WHEN_READ
-        /* The data phase is over: from here the console's `0x05` asks are
-         * answered with the read-done state, not the tag-detected `09`. */
         if (n > 0) {
-            nfc_tag_set_read_done(&s_control.nfc, true);
-            ESP_LOGI("control", "nfc push complete: 0x05 answers go done");
+            ESP_LOGI("control", "nfc push complete: %u chunks of the served space",
+                     (unsigned)(s_push_off / NFC_TAG_READ_CHUNK));
         }
-#endif
     }
     control_ctl_unlock();
     if (n == 0) {

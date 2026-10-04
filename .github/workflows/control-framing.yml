@@ -81,26 +81,13 @@ jobs:
               -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_plain" \
               test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
             "$RUNNER_TEMP/test_nfc_tag_plain"
-            # #36's bench-only paths still have to compile: the unsolicited push
-            # and the report byte that follows the reader, both of which now
-            # serve the 600-byte space.
+            # #36's bench-only path still has to compile: the unsolicited push,
+            # which now serves the status the lifecycle arms and the 600-byte
+            # space (#48 retired the byte/status knobs its siblings used).
             cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_PUSH_READ_DATA=1 \
-              -DNFC_TAG_BYTE_FOLLOWS_POLLING=1 \
               -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_push" \
               test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
             "$RUNNER_TEMP/test_nfc_tag_push"
-            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_STATUS_DONE_WHEN_READ=1 \
-              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_done" \
-              test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
-            "$RUNNER_TEMP/test_nfc_tag_done"
-            # #45's Route 1: the same answer as an edge rather than a level,
-            # which refines the knob above rather than standing alone (the
-            # header refuses the pair's halves by name).
-            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_STATUS_DONE_WHEN_READ=1 \
-              -DNFC_TAG_STATUS_DONE_ONCE=1 \
-              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_done_once" \
-              test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
-            "$RUNNER_TEMP/test_nfc_tag_done_once"
           done
 
       - name: C — the NFC console-traffic trace (#36)

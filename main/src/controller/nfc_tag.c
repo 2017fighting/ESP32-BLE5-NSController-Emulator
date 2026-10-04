@@ -83,6 +83,38 @@ static void nfc_set_state(nfc_tag_t *nfc, uint8_t state)
     }
 }
 
+/* §6.6: what the *reader* has in the field — a placement that a completed read
+ * has not ejected. The HID byte, the console's level and the `0x15` answer are
+ * all read from this, so a post-eject field can never advertise a tag the
+ * `0x05` answer says is not there. */
+static bool nfc_field_present(const nfc_tag_t *nfc)
+{
+    return nfc->placed && !nfc->lifecycle.ejected;
+}
+
+/*
+ * §4.9's one reader event (#48), and the counter's only writer: the counter
+ * advances from wherever the reader left it, wrapping `0x07 → 0x01` so `0x00`
+ * stays reserved for "no tag in the field" — which is also what a tag-removed
+ * event leaves on the wire. A tag-presented, scan-ready, operation-ready,
+ * write-complete or tag-removed edge calls this exactly once.
+ */
+static void nfc_reader_event(nfc_tag_t *nfc)
+{
+    const uint8_t next = (uint8_t)((nfc->counter % NFC_REPORT_COUNTER_MAX) + 1u);
+    nfc->counter = next;
+    nfc_set_state(nfc, nfc_field_present(nfc) ? next : NFC_STATE_IDLE);
+}
+
+/* §6.6: a placement, an unplacement and the gap's close all end whatever read
+ * was in flight — the lifecycle is per placement and per scan. */
+static void nfc_reset_lifecycle(nfc_tag_t *nfc)
+{
+    nfc->lifecycle.armed = false;
+    nfc->lifecycle.read_complete = false;
+    nfc->lifecycle.ejected = false;
+}
+
 void nfc_tag_init(nfc_tag_t *nfc)
 {
     if (nfc == NULL) {
@@ -121,15 +153,6 @@ bool nfc_tag_placed(const nfc_tag_t *nfc)
     return nfc != NULL && nfc->placed;
 }
 
-#if NFC_TAG_STATUS_DONE_WHEN_READ
-void nfc_tag_set_read_done(nfc_tag_t *nfc, bool done)
-{
-    if (nfc != NULL) {
-        nfc->read_done = done;
-    }
-}
-#endif
-
 void nfc_tag_identity(const nfc_tag_t *nfc, uint8_t out[NFC_TAG_UID_SIZE])
 {
     if (nfc == NULL || out == NULL) {
@@ -160,6 +183,7 @@ void nfc_tag_place(nfc_tag_t *nfc, const uint8_t *tag, size_t len, uint32_t now_
     memcpy(nfc->tag, tag, NFC_TAG_SIZE);
     nfc_clear_read_op(nfc);
     nfc_reset_write(nfc);
+    nfc_reset_lifecycle(nfc);
 
     if (had_a_tag) {
         nfc->placed = false;
@@ -168,22 +192,19 @@ void nfc_tag_place(nfc_tag_t *nfc, const uint8_t *tag, size_t len, uint32_t now_
         if (nfc->polling == NFC_STATE_TAG_DETECTED) {
             nfc->polling = NFC_STATE_POLLING;
         }
-        nfc_set_state(nfc, NFC_STATE_IDLE);
+        nfc_reader_event(nfc); /* the old tag leaves the field (§4.9) */
         return;
     }
 
     nfc->placed = true;
     nfc->staged = false;
-#if NFC_TAG_STATUS_DONE_WHEN_READ
-    nfc->read_done = false;
-#endif
     /* The console's level follows a placement: if it was asking, the answer is
      * now "tag detected". It does not create an ask where there was none — the
      * report byte is what prompts the console, and it is separate (§4.9). */
     if (nfc->polling == NFC_STATE_POLLING) {
         nfc->polling = NFC_STATE_TAG_DETECTED;
     }
-    nfc_set_state(nfc, NFC_STATE_TAG_DETECTED);
+    nfc_reader_event(nfc); /* tag presented (§4.9) */
 }
 
 void nfc_tag_tick(nfc_tag_t *nfc, uint32_t now_ms)
@@ -199,7 +220,7 @@ void nfc_tag_tick(nfc_tag_t *nfc, uint32_t now_ms)
     if (nfc->polling == NFC_STATE_POLLING) {
         nfc->polling = NFC_STATE_TAG_DETECTED;
     }
-    nfc_set_state(nfc, NFC_STATE_TAG_DETECTED);
+    nfc_reader_event(nfc); /* tag presented (§4.9) */
 }
 
 void nfc_tag_unplace(nfc_tag_t *nfc)
@@ -214,9 +235,7 @@ void nfc_tag_unplace(nfc_tag_t *nfc)
     nfc->staged = false;
     nfc_clear_read_op(nfc);
     nfc_reset_write(nfc);
-#if NFC_TAG_STATUS_DONE_WHEN_READ
-    nfc->read_done = false;
-#endif
+    nfc_reset_lifecycle(nfc);
     /* The console is still asking; it just has nothing to scan now. */
     if (nfc->polling == NFC_STATE_TAG_DETECTED) {
         nfc->polling = NFC_STATE_POLLING;
@@ -224,7 +243,7 @@ void nfc_tag_unplace(nfc_tag_t *nfc)
     /* The bytes stay in the buffer (§4.3 "tag data retained") and are
      * overwritten by the next placement, which is what discards a `0x14`
      * write-back. */
-    nfc_set_state(nfc, NFC_STATE_IDLE);
+    nfc_reader_event(nfc); /* the tag leaves the field (§4.9) */
 }
 
 /* ------------------------------------------------------------------ 0x05 */
@@ -238,29 +257,36 @@ static size_t nfc_reply_status(nfc_tag_t *nfc, uint8_t *out, size_t out_cap)
 
     if (!nfc->placed) {
         /* The console asked a get-status, so it is asking; with no tag in the
-         * field the answer is "polling". */
+         * field the answer is "no tag". Whether the *never-placed* answer should
+         * be the post-eject `07 41` instead is G-19's open half; this module
+         * keeps `0x00`. */
         nfc->polling = NFC_STATE_POLLING;
         out[0] = NFC_STATUS_NO_TAG;
         return NFC_STATUS_RESPONSE_SIZE;
     }
 
-    /* §6.6: a committed write is the lifecycle's own state until the console
-     * ends the scan (`0x04`) or the placement does. */
-    out[0] = nfc->write.committed ? NFC_STATUS_WRITE_COMMITTED : NFC_STATUS_TAG_DETECTED;
-#if NFC_TAG_STATUS_DONE_WHEN_READ
-    /* The bench's answer lifecycle (see `nfc_tag.h`): once the armed read's
-     * data has been served, the status the console is polling for flips to
-     * the read-done state — the NS1 P3 trailer, answered rather than pushed. */
-    if (nfc->read_done && !nfc->write.committed) {
-        out[0] = (uint8_t)NFC_TAG_READ_DONE_STATE;
-#if NFC_TAG_STATUS_DONE_ONCE
-        /* #45: the same signal as an edge — the reference sends its `04` once
-         * per read and its status answers never rest there, so the state is
-         * consumed by the ask that carried it. */
-        nfc->read_done = false;
-#endif
+    /* §6.6's post-eject answer: the scan's read completed and `0x04` ended it, so
+     * the reader's field is empty. The second implementation answers this as a
+     * bare `07 41` with everything else zero (`s2_nfc_codec.cpp:775-792`, context
+     * tier), and that is what the console reads back after a whole tag. */
+    if (nfc->lifecycle.ejected) {
+        out[0] = NFC_STATUS_EJECTED;
+        out[1] = NFC_STATUS_EJECTED_DETAIL;
+        /* Nothing is in the field, so the console is asking for a tag it does
+         * not have — the same level the never-placed read reports. */
+        nfc->polling = NFC_STATE_POLLING;
+        return NFC_STATUS_RESPONSE_SIZE;
     }
-#endif
+
+    /* §6.6's lifecycle, in the reference's own precedence: a committed write's
+     * `0x05` outranks an armed read, which outranks the tag-in-field `0x09`.
+     * The armed `04` is a *level*: every ask of the window carries it, which is
+     * the answer the bench measured unlocking the console's first pull. */
+    out[0] = nfc->write.committed     ? NFC_STATUS_WRITE_COMMITTED
+             : nfc->lifecycle.armed ? NFC_STATUS_READ_ARMED
+                                    : NFC_STATUS_TAG_DETECTED;
+    /* Offsets 1–7 are the captured flags, whose first byte is the detail byte
+     * (always `0x00` outside the post-eject answer). */
     memcpy(&out[1], nfc_status_flags, sizeof(nfc_status_flags));
     out[8] = (uint8_t)NFC_TAG_UID_SIZE;
     nfc_tag_identity(nfc, &out[9]);
@@ -276,16 +302,21 @@ static size_t nfc_reply_read(nfc_tag_t *nfc, const uint8_t *payload, size_t len,
     if (payload == NULL || len < 2) {
         return 0;
     }
-    /* An unplaced tag answers nothing: the console reaches `0x15` only after a
-     * `0x05` that named a tag, so this is the gap's other half (§6.5). */
-    if (!nfc->placed || out == NULL || out_cap < NFC_TAG_READ_HEAD_SIZE) {
+    /* An unplaced tag — or one a completed read has ejected — answers nothing:
+     * the console reaches `0x15` only after a `0x05` that named a tag, so this
+     * is the gap's other half (§6.5). */
+    if (!nfc_field_present(nfc) || out == NULL || out_cap < NFC_TAG_READ_HEAD_SIZE) {
         return 0;
     }
     const uint16_t wire = nfc_rd_le16(payload);
     if (wire >= NFC_TAG_SERVED_SIZE) {
         /* Past the served space: the bare last-chunk marker. Silence is what
          * ended the register-screen sessions at the console's third probe
-         * (`0x2c0`), so the answer is a well-formed "nothing more". */
+         * (`0x2c0`), so the answer is a well-formed "nothing more" — a
+         * deliberate deviation from the reference, whose own handler refuses
+         * the ask (`s2_nfc_codec.cpp:831-846` guards the marker path behind
+         * `offset < op_buffer.size()`). It does **not** complete the read: the
+         * read's end is the final chunk of the space, and nothing else. */
         out[0] = 0x01;
         out[1] = 0x00;
         out[2] = 0x00;
@@ -298,6 +329,12 @@ static size_t nfc_reply_read(nfc_tag_t *nfc, const uint8_t *payload, size_t len,
     }
     if (out_cap < NFC_TAG_READ_HEAD_SIZE + chunk) {
         return 0;
+    }
+    /* The chunk that reaches the space's end is the read's completion (§6.6,
+     * #48): the console's `0x04` after one is the post-eject answer, and after
+     * anything less it is not. */
+    if (nfc->lifecycle.armed && wire + chunk >= NFC_TAG_SERVED_SIZE) {
+        nfc->lifecycle.read_complete = true;
     }
     /* The head the console reads: `last` u8 · `len` u16 (LE)
      * (`switch2_controller_research/commands.md:68`). */
@@ -447,6 +484,9 @@ static bool nfc_commit_write(nfc_tag_t *nfc)
     }
     nfc->write.committed = true;
     nfc->write.active = false;
+    nfc->lifecycle.armed = false;
+    nfc->lifecycle.read_complete = false;
+    nfc_reader_event(nfc); /* write complete (§4.9) */
     return true;
 }
 
@@ -459,14 +499,11 @@ size_t nfc_tag_command(nfc_tag_t *nfc, uint8_t subcmd, const uint8_t *payload, s
         return 0;
     }
     switch (subcmd) {
-    case NFC_CMD_START_POLLING:
+    case NFC_CMD_START_POLLING: {
         /* §3.2: the console is asking. A tag already in the field is the answer;
-         * with none (including during a gap) the level is `polling`. The report
-         * byte is untouched — a poll in `IDLE`/`MACRO` must not look like
-         * `AMIIBO` (§4.9). */
-#if NFC_TAG_STATUS_DONE_WHEN_READ
-        nfc->read_done = false;
-#endif
+         * with none (including during a gap) the level is `polling`. A poll in
+         * `IDLE`/`MACRO` moves no report byte; a poll over a placed tag is the
+         * reader's scan-ready event and advances the counter (§4.9, #48). */
         /* A staged stream does not survive a new scan: a re-arm is a new
          * transaction (§6.6's G-17 flow), and the head's echoed request is
          * per scan. A committed write keeps its status until the scan ends —
@@ -475,16 +512,37 @@ size_t nfc_tag_command(nfc_tag_t *nfc, uint8_t subcmd, const uint8_t *payload, s
         if (nfc->write.active && !nfc->write.committed) {
             nfc_reset_write(nfc);
         }
-        nfc->polling = nfc->placed ? NFC_STATE_TAG_DETECTED : NFC_STATE_POLLING;
+        /* The read lifecycle is per scan: a re-arm ends the armed read and its
+         * completion, which is what puts the status answer back to `09`. The
+         * post-eject state is *not* cleared here — the reader's field stays
+         * empty until a new placement (§6.6, #48). */
+        nfc->lifecycle.armed = false;
+        nfc->lifecycle.read_complete = false;
+        nfc->polling = nfc_field_present(nfc) ? NFC_STATE_TAG_DETECTED : NFC_STATE_POLLING;
+        if (nfc_field_present(nfc)) {
+            nfc_reader_event(nfc);
+        }
         return 0;
+    }
     case NFC_CMD_STOP_POLLING: {
         /* §3.3/§6.5: the console stopped asking. That is `SCAN_ENDED`, and it is
          * what the container rotates on — but only for a tag that was in the
-         * field to be scanned. The write-back dies with the scan's status; its
-         * bytes stay in the volatile tag until the placement does. */
+         * field to be scanned. */
         bool was_active = nfc->polling != NFC_STATE_IDLE;
         bool had_tag = nfc->placed;
         nfc->polling = NFC_STATE_IDLE;
+        nfc->lifecycle.armed = false;
+        /* §6.6 (#48): a stop that ends a *completed* read leaves the reader's
+         * field empty — the `0x05` answer is `07 41` from here until a new
+         * placement. A stop after an incomplete read is not that: it is the
+         * tag-in-field `09`, which is where the bench's no-crash cycles ended. */
+        if (nfc->lifecycle.read_complete) {
+            nfc->lifecycle.ejected = true;
+            nfc_reader_event(nfc);
+        }
+        nfc->lifecycle.read_complete = false;
+        /* The write-back dies with the scan's status; its bytes stay in the
+         * volatile tag until the placement does. */
         nfc_reset_write(nfc);
         if (was_active && had_tag && nfc->events.scan_ended != NULL) {
             nfc->events.scan_ended(nfc->events.ctx);
@@ -493,16 +551,31 @@ size_t nfc_tag_command(nfc_tag_t *nfc, uint8_t subcmd, const uint8_t *payload, s
     }
     case NFC_CMD_GET_STATUS:
         return nfc_reply_status(nfc, out, out_cap);
-    case NFC_CMD_READ_DEVICE:
+    case NFC_CMD_READ_DEVICE: {
         /* The captured exchange is an ACK with no payload
          * (`switch2_controller_research/commands.md:64`), and the request's own
          * nine bytes are remembered: the framing head echoes `payload[10..18]`
-         * at its `[51..59]` (§6.6). */
+         * at its `[51..59]` (§6.6). Only the canonical shape is remembered — a
+         * malformed ask must not ride into the next head. */
+        const bool canonical =
+            payload != NULL && len >= NFC_TAG_READ_OP_OFFSET + NFC_TAG_READ_OP_SIZE &&
+            payload[0] == 0xD0u && payload[1] == 0x07u;
         memset(nfc->read_req_echo, 0, sizeof(nfc->read_req_echo));
-        if (payload != NULL && len >= NFC_TAG_READ_OP_OFFSET + NFC_TAG_READ_OP_SIZE) {
+        if (canonical) {
             memcpy(nfc->read_req_echo, &payload[NFC_TAG_READ_OP_OFFSET], NFC_TAG_READ_OP_SIZE);
         }
+        /* §6.6 (#48): this is the read command, and it arms the status
+         * lifecycle — `0x05` answers `04` for the whole window. The reference
+         * accepts only that canonical request shape (19 bytes at the console's
+         * own length), and only while something is in the field; a post-eject
+         * reader has no tag to arm (`s2_nfc_codec.cpp:795-830`, context tier). */
+        if (canonical && nfc_field_present(nfc)) {
+            nfc->lifecycle.armed = true;
+            nfc->lifecycle.read_complete = false;
+            nfc_reader_event(nfc); /* operation ready (§4.9) */
+        }
         return 0;
+    }
     case NFC_CMD_COMMIT_WRITE:
         nfc_commit_write(nfc);
         return 0;
