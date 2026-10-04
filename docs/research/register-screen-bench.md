@@ -253,3 +253,135 @@ identity.
   crash aftermath is characterised: the console force-reboots, the device auto-reconnects
   and re-answers the `0x0C` probe, and an idle console then cycles a `531` drop/reconnect
   pattern until input or sleep settles it.
+
+---
+
+## 8. The third session, prepared: the corrected combination (issue #45)
+
+**Status: prepared and flashed, not run.** Every build in §1 and §7 served shapes that are now
+G-19's defect, and the three tickets that carried the corrections landed (#46 the served shapes,
+#47 the `0x14` write path, #48 the reader contract and the report byte). That changes what "the
+continuation's variable" even is: this take is not another knob over take 13, it is the
+reference's own shape with **one** bench knob on top, and the edge/level question is postponed
+until the read is judged on a faithful wire.
+
+### 8.1 Why this take is different in kind
+
+Relative to take 10 — §1's last no-crash causality build — the corrected combination moves four
+things at once, and they are not variables to search over: they are what a real Pro Controller 2
+serves.
+
+| Layer | The earlier builds (§1, §7) | The corrected build |
+| --- | --- | --- |
+| served space | 540 B with the image at wire 0, or the NS1 P1 prefix (600 B), 64-byte chunks, offset-echo head | 600 B `[60 B framing][540 B image]`, image at wire `0x3C`, 70-byte chunks, `last` · `len` head, the bare `01 00 00` marker past the space |
+| status answer | `04` only when `NFC_TAG_STATUS_DONE_WHEN_READ` was set; else `09` | `09` → `04` (**a level**, the whole armed window) → `09`, by default (#48) |
+| report byte | pinned (`NFC_TAG_BYTE_FOLLOWS_POLLING`, `READ_DONE_BYTE`/`MS`) | the reader's **event counter** `0x01`–`0x07`, by default (§4.9, ADR-0016) |
+| the knob | up to five accumulated flags | `NFC_TAG_PUSH_READ_DATA=1`, and nothing else |
+
+The byte-hold and trailer-last variants that crashed the console are **gone from the tree**
+(#48 retired the knob family, #46 deleted the obsolete view knobs), so this build cannot inherit
+them — which is also why the build below starts from a deleted `build-bench/` (§5's CMakeCache
+accumulation lesson). The one comparison compile that survives is the plain-offset view
+(`NFC_TAG_READ_PLAIN_VIEW`); it is not part of this take.
+
+### 8.2 The build, flashed
+
+From the repository root, ESP-IDF v5.5.5 active (`source ~/esp/idf-env-5.5.5.sh`):
+
+```bash
+rm -rf build-bench
+idf.py -B build-bench -DCMAKE_C_FLAGS=-DNFC_TAG_PUSH_READ_DATA=1 build
+idf.py -B build-bench -p /dev/cu.usbmodem5C930639851 flash
+```
+
+The one flag is the whole delta; `build-bench/toolchain/cflags` is the check:
+
+```text
+-DNFC_TAG_PUSH_READ_DATA=1
+-mlongcalls
+-fno-builtin-memcpy
+-fno-builtin-memset
+-fno-builtin-bzero
+```
+
+The last four are ESP-IDF's esp32s3 defaults, not knobs. Built and flashed 2026-10-04: app
+image `0x86fb0` (552,880 B, 82% of the 3 MB slot free), SHA-256
+`2de66430445ca227415464378f5af36f854421331066e466386de0ce3f1e7dca`, every segment
+`Hash of data verified.` The container is **down** (`python3 scripts/start_container.py --stop`):
+the resident driver is the port's one holder (§10.2), and it replaces the container's placement
+role for the session.
+
+### 8.3 The setup, and the one non-NFC prerequisite
+
+1. **Pairing.** The console's own unpair leaves the device's NVS bond stale, and re-pairing then
+   fails silently (§5). If the console was unpaired console-side since §7, erase the `nvs`
+   partition before the run (`esptool erase_region 0x9000 0x6000`), hard reset, and let the
+   operator re-pair from the console's pairing screen — it pairs on the first attempt.
+2. **Bind the read to our reader** (§2 fact 1, §7 mechanics): the operator's Joy-Con navigates
+   to **设置 → amiibo → 添加所有者和昵称** and parks the cursor; the device's own `A` presses into
+   it. The prompt's icon must be the Pro Controller.
+3. **Attach the resident driver with the full tee** — it is what makes either answer legible:
+
+   ```bash
+   container/.venv/bin/python scripts/bench_press_buttons.py \
+       --fifo /tmp/bench-fifo --tee-all --figure '<the Mario tag §7 placed>'
+   ```
+
+   `--tee-all` tees every device log line, not just the NFC ones — the ~3 s window's
+   zero-traffic fact is this flag's product, and the `console nfc: …` lines are the measurement.
+   Rotation is off in resident mode deliberately (the operator owns placement timing), so the
+   session drives placement by hand:
+
+   ```bash
+   echo place   > /tmp/bench-fifo
+   echo unplace > /tmp/bench-fifo
+   ```
+
+### 8.4 What to watch, in order
+
+The console's cycle is §7's: the one-shot `0x03` probe → `0x05` (`00` in the §6.5 gap, then
+`09`) → `0x04` → the 1000 ms `0x03` re-arm → `0x06` → the probes → `0x05` answered `04` → the
+~3 s deadline → `0x04`. Under the corrected shapes the questions are:
+
+1. **Does the console pull more than the three deterministic probes?** §7 saw exactly
+   `0x40`/`0x140`/`0x2c0` on every variable. A sequential read of the corrected 600-byte space
+   is nine 70-byte chunks at wire offsets `0x0000`, `0x0046`, `0x008C`, `0x00D2`, `0x0118`,
+   `0x015E`, `0x01A4`, `0x01EA`, `0x0230` (the last serving 40 bytes, `n=43`, `last=1`). More
+   than three distinct `0x15` offsets, or offsets that advance sequentially by 70 (`0x46`) rather
+   than the old 64-aligned probe samples (`0x40`/`0x140`/`0x2c0`), is the first evidence the
+   correction reached the console.
+2. **Does the console get past its ~3 s deadline?** A completed read is the register screen
+   moving on to the figure's own data instead of the read-error chime and the next re-arm. The
+   deadline riding out unchanged is the failure.
+3. **Does the report byte move?** The `nfc byte:` lines should show the counter stepping
+   `0x01`–`0x07` across the read's stages rather than holding one value (§4.9's amendment; a
+   hold is the crash flank G-18 isolates).
+4. **Does the console crash?** `2011-0301` is the field to grep for. This build is the
+   reference's own no-crash shape — the level `04` **and** the moving byte **and** the safe
+   push order — so a crash here is new information, not a re-run of a falsified variant.
+
+**A whole read is the goal** (issue #45's "Done when"): all 540 image bytes across the `0x15`
+pulls. The trace's distinct `0x15` entries should cover the image (wire `0x3C`–`0x257`), and the
+`last=1` chunk should cross. If the console instead stops at three probes again, the continuation
+is still unanswered and the next variable is the one Route 1 always named.
+
+### 8.5 The abort rule (G-18's discipline, unchanged)
+
+**Two consecutive console crashes stop the bench.** The ledger is five crashes across four
+configs with three isolated factors and no single explanation; a sixth is not free. One crash is
+a datum — note the trace and the screen state, and continue only if the operator agrees. A second
+consecutive crash ends the session, whatever the trace shows.
+
+### 8.6 What each outcome decides
+
+- **A completed read** releases the freshness measurement (#37): the two-rotation protocol with
+  its same-identity negative control (§7.3) is already written, and the read gate it waits on is
+  this one.
+- **A stop at three probes again** leaves the continuation open. The next variable is the
+  **edge vs level** question Route 1 was built for — the ns1-faithful lifecycle answers `04`
+  once and returns to `09`, where #48's default answers `04` as a level for the window. That
+  knob no longer exists in the tree (retired by #48), so re-preparing it is itself a small
+  change; the decisive route remains the real-controller capture (Route 2, nRF52840 + LTK) that
+  answers the push shapes, the framing and the trailing region together.
+- **Either way, if nothing completes**, the fallback question (#39) decides what replaces the
+  read, with §7's and this session's evidence attached.
