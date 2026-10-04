@@ -92,6 +92,10 @@ jobs:
               -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_p1" \
               test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
             "$RUNNER_TEMP/test_nfc_tag_p1"
+            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_STATUS_DONE_WHEN_READ=1 \
+              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_done" \
+              test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
+            "$RUNNER_TEMP/test_nfc_tag_done"
           done
 
       - name: C — the NFC console-traffic trace (#36)

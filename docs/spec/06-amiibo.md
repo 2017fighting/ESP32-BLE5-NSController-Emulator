@@ -232,7 +232,7 @@ and they are firmware changes rather than protocol changes:
   *continuation* — the console pulls one chunk and stops (`register-screen-bench.md` §3) —
   and three frame combinations **crashed the console's amiibo module** (`2011-0301`, forced
   reboot; G-18). The bench knobs for all of it are in the tree, default OFF
-  (`nfc_tag.h`: `NFC_TAG_PUSH_READ_DATA`, `NFC_TAG_STATUS_DONE_WHEN_READ`,
+  (`nfc_tag.h`: `NFC_TAG_PUSH_READ_DATA` (status-first — the safe order), `NFC_TAG_STATUS_DONE_WHEN_READ`,
   `NFC_TAG_READ_DONE_BYTE/MS`, `NFC_TAG_READ_PAD_TO`, `NFC_TAG_BUFFER_P1_PREFIX` — the last
   serves `[60 B P1 framing][image]`, the layout the canonical `0x46`→image-`0x0A` shift
   implies, host-tested under its own compile).

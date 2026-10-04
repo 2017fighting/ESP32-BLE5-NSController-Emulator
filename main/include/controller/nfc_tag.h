@@ -109,35 +109,33 @@ extern "C" {
  * console's `0x15` pulls, and the input report's NFC byte (values 0x00–0x07)
  * is the only completion signal left in the input stream — so the bench's
  * first try is `0x04` (read done), replacing the earlier blind `0x03` guess.
- * Default `0x03`: the value the #39 build shipped, so nothing changes unless
- * a bench build asks for the hypothesis. */
+ * A *value* knob, not an on/off one: the default `0x03` preserves the #39
+ * build's behaviour (nothing changes unless a bench build overrides it), and
+ * `0` would mean idle — which is `NFC_TAG_BYTE_FOLLOWS_POLLING`'s own domain. */
 #ifndef NFC_TAG_READ_DONE_BYTE
 #define NFC_TAG_READ_DONE_BYTE 0x03u
 #endif
 
-/* The follow-up push after `0x06` (the register-screen session, 2026-10-04):
- * with the byte at `0x04` and a full-log tee, the console sent *nothing* for
- * the whole 3.0 s window (`d0 07` reads as a 2000 ms deadline) — it waits for
- * a device-initiated notification, and the NS1 P3 trailer says that
- * notification is a *status line* with the read-complete state. Hypothesis:
- * the NS2 `0x05` payload's byte 0 *is* the state (09 = tag/POLL_AGAIN,
- * 00 = none), so the completion push is a sub-0x05 notification whose payload
- * opens `NFC_TAG_NOTIFY_READ_DONE_STATE` (default `04`, the NS1 read-complete
- * value). Default OFF; device-side only. */
-#ifndef NFC_TAG_NOTIFY_READ_DONE
-#define NFC_TAG_NOTIFY_READ_DONE 0
-#endif
-#ifndef NFC_TAG_NOTIFY_READ_DONE_STATE
-#define NFC_TAG_NOTIFY_READ_DONE_STATE 0x04u
+/* The read-done state the push's opening status and the `0x05` answer
+ * lifecycle carry: `04`, the NS1 read-complete value (`ns1-nfc-read-decode.md`
+ * §2). */
+#ifndef NFC_TAG_READ_DONE_STATE
+#define NFC_TAG_READ_DONE_STATE 0x04u
 #endif
 
-/* The push variant after the status-only push was ignored (same session):
- * the NS1 answer to the read command was the *data itself* — P1/P2 pushed in
- * the input stream — so this knob pushes the whole 540-byte tag as sub-0x15-
- * shaped notifications right after the `0x06` ACK (one `0x05` read-done status
- * first, then 64-byte chunks at plain image offsets 0, 64, … 512). Default
- * OFF; device-side only; the console's own `0x15` asks still take the normal
- * response path. */
+/* The whole-tag push after `0x06` (the register-screen session, 2026-10-04):
+ * with the byte at `0x04` and a full-log tee, the console sent *nothing* for
+ * the whole 3.0 s window (`d0 07` reads as a 2000 ms deadline) — it waits for
+ * a device-initiated notification, and pushing the whole tag as `0x15`-shaped
+ * notifications is what unlocked its own `0x15` pulls, the first ever
+ * observed. The push opens with the read-done status (`NFC_TAG_READ_DONE_
+ * STATE`) and follows with 64-byte chunks at plain served offsets; the
+ * *closing*-trailer order is the one that crashed the console twice
+ * (`2011-0301`, G-18), so the tree builds the safe order. A status-only push
+ * variant existed and was falsified — the console drops unsolicited sub-0x05
+ * frames — and was removed from the tree (the record: `register-screen-bench.md`
+ * take 4). Default OFF; device-side only; the console's own `0x15` asks still
+ * take the normal response path. */
 #ifndef NFC_TAG_PUSH_READ_DATA
 #define NFC_TAG_PUSH_READ_DATA 0
 #endif
@@ -178,7 +176,7 @@ extern "C" {
  * for the read to complete — and the NS1 lifecycle carries that on the status
  * line's state byte (`09` tag → `04` read done). The 04-as-a-push variant was
  * discarded as unrequested; this knob flips the *answer* to a pending `0x05`
- * to `NFC_TAG_NOTIFY_READ_DONE_STATE` once the armed read's data has been
+ * to `NFC_TAG_READ_DONE_STATE` once the armed read's data has been
  * served, back to `09` on the next poll cycle. Default OFF. */
 #ifndef NFC_TAG_STATUS_DONE_WHEN_READ
 #define NFC_TAG_STATUS_DONE_WHEN_READ 0

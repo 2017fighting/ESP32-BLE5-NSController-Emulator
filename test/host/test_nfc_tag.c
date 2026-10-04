@@ -254,6 +254,45 @@ static void test_read_buffer_slices_page_wise(void)
           "a truncated 0x15 request is refused");
 }
 
+#if NFC_TAG_STATUS_DONE_WHEN_READ
+/* The bench's `0x05` answer lifecycle: once the armed read's data is served,
+ * a pending status ask is answered with the read-done state — the causality
+ * the register-screen bench measured (answer `04` → first pull in 30 ms) —
+ * and the next poll cycle resets it. */
+static void test_status_flips_done_when_read(void)
+{
+    nfc_tag_t nfc;
+    nfc_tag_init(&nfc);
+    uint8_t tag[NFC_TAG_SIZE];
+    build_tag(tag, 0x11);
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now++);
+
+    uint8_t out[NFC_STATUS_RESPONSE_SIZE];
+    size_t n = nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(n == NFC_STATUS_RESPONSE_SIZE && out[0] == NFC_STATUS_TAG_DETECTED,
+          "a placed tag answers 09 before the read is served");
+
+    nfc_tag_set_read_done(&nfc, true);
+    n = nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(n == NFC_STATUS_RESPONSE_SIZE && out[0] == NFC_TAG_READ_DONE_STATE,
+          "the served read flips the status answer to the done state");
+    CHECK(memcmp(&out[1], ((const uint8_t[]){0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x00}), 7) == 0,
+          "the flags and UID ride along unchanged");
+
+    nfc_tag_command(&nfc, NFC_CMD_START_POLLING, NULL, 0, out, sizeof(out));
+    n = nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_STATUS_TAG_DETECTED,
+          "the next poll cycle resets the done state");
+
+    nfc_tag_set_read_done(&nfc, true);
+    nfc_tag_unplace(&nfc);
+    nfc_tag_place(&nfc, tag, sizeof(tag), g_now++);
+    n = nfc_tag_command(&nfc, NFC_CMD_GET_STATUS, NULL, 0, out, sizeof(out));
+    CHECK(out[0] == NFC_STATUS_TAG_DETECTED,
+          "a fresh placement resets the done state");
+}
+#endif
+
 static void test_read_buffer_needs_a_tag(void)
 {
     nfc_tag_t nfc;
@@ -571,6 +610,9 @@ int main(void)
     test_status_without_a_tag();
     test_read_buffer_slices_page_wise();
     test_read_buffer_needs_a_tag();
+#if NFC_TAG_STATUS_DONE_WHEN_READ
+    test_status_flips_done_when_read();
+#endif
 #if NFC_TAG_READ_WIRE_BASE != 0
     test_the_wire_base_maps_reads_only();
 #endif

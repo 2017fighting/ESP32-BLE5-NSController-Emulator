@@ -88,15 +88,24 @@ continuation signal, in the order the evidence points:
 
 - `scripts/bench_press_buttons.py` — `--tee-all`: tee every device log line (the 3 s window's
   zero-traffic fact is this flag's product).
-- `main/include/controller/nfc_tag.h` + `nfc_tag.c` + `control_parser.c` + `gatt.c` — five
+- `main/include/controller/nfc_tag.h` + `nfc_tag.c` + `control_parser.c` + `gatt.c` — the
   bench knobs, **all default OFF**, each carrying its own comment and falsification record:
-  `NFC_TAG_READ_DONE_BYTE` (the post-`0x06` byte), `NFC_TAG_NOTIFY_READ_DONE` (the unsolicited
-  status push — falsified), `NFC_TAG_PUSH_READ_DATA` (the whole-tag push, paced by the 10 ms
-  tick through the GATT-registered sink), `NFC_TAG_READ_DONE_MS` (the byte pulse),
-  `NFC_TAG_STATUS_DONE_WHEN_READ` (the `04` answer), `NFC_TAG_READ_PAD_TO` (the zero pad) and
-  `NFC_TAG_BUFFER_P1_PREFIX` (the framing+image served view, host-tested under its own
-  compile in `test_nfc_tag.c`).
-- The host suite passes under the plain, `PAD_TO`, `P1_PREFIX` and `WIRE_BASE` compiles.
+  `NFC_TAG_READ_DONE_BYTE` (the post-`0x06` byte — a *value* knob, default `0x03` = the #39
+  behaviour), `NFC_TAG_READ_DONE_MS` (the byte pulse), `NFC_TAG_PUSH_READ_DATA` (the whole-tag
+  push, paced by the 10 ms tick through the GATT-registered sink — arming deliberately
+  independent of the byte knob), `NFC_TAG_STATUS_DONE_WHEN_READ` (the `04` answer),
+  `NFC_TAG_READ_PAD_TO` (the zero pad) and `NFC_TAG_BUFFER_P1_PREFIX` (the framing+image
+  served view). The status-only push knob was **removed after falsification** (the console
+  drops unsolicited sub-0x05 frames — its record is take 4 above). The push order defaults to
+  **status-first** — the order takes 5–10 ran without a crash; the trailer-last order that
+  crashed twice is not what the tree builds.
+- The host suite passes under the plain, `PAD_TO`, `P1_PREFIX`, `STATUS_DONE` and `WIRE_BASE`
+  compiles (CI runs them all).
+- **Promotion debt, from the code review**: the push path is bench-shaped — `gatt.c` hand-rolls
+  the response frame header and the plan-executor tick paces BLE notifications, both
+  §7.1/§7.2 layering breaches that are dormant while the knobs are OFF. If a push graduates
+  into the design, the frame construction moves to `ns2_codec.c` and the pacing to the GATT
+  event path first.
 
 ## 5. Two bench-path lessons (not NFC, recorded so they are not relearned)
 

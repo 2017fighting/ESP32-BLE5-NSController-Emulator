@@ -108,15 +108,14 @@ static bool s_nfc_reading;
 static uint32_t s_nfc_reading_since;
 #endif
 #endif
-#if NFC_TAG_NOTIFY_READ_DONE || NFC_TAG_PUSH_READ_DATA
-/* One-shot: set when an `0x06` read command arms, drained by the GATT layer
- * as unsolicited notifications right after the `0x06` ACK — the NS2
- * translation of the NS1 P1/P2/P3 pushes. */
-static volatile bool s_nfc_notify_pending;
-#endif
 #if NFC_TAG_PUSH_READ_DATA
-static bool s_push_status_last;
-static bool s_push_trailer_sent;
+/* One-shot: set when an `0x06` read command arms, drained by the 10 ms tick
+ * as one paced notification per tick — the NS2 translation of the NS1 P1/P2/P3
+ * pushes. Written under the control lock by the parser task; read by the tick
+ * outside it (a volatile bool whose worst race is one extra tick of delay —
+ * the drain itself re-checks under the lock in `control_nfc_one_push`). */
+static volatile bool s_nfc_notify_pending;
+static bool s_push_status_first;
 static uint16_t s_push_off;
 /* The push sink, registered by the GATT layer: one (subcmd, payload) per
  * call, paced by the 10 ms tick — the burst variant (all ten notifications
@@ -714,17 +713,26 @@ static void control_executor_task(void *arg)
             nfc_trace_flush_log();
         }
 #if NFC_TAG_PUSH_READ_DATA
-        /* The paced push: one chunk per tick (10 ms), outside the control lock
-         * — `control_nfc_one_push` takes it itself. A real reader streams the
-         * pages off the RF over ~100 ms; the burst variant's scattered console
-         * re-asks read as drops, so the push is paced like the real thing. */
-        if (s_nfc_notify_pending && s_nfc_push_sink != NULL) {
+        /* The paced push: one chunk per tick (10 ms). A real reader streams
+         * the pages off the RF over ~100 ms; the burst variant's scattered
+         * console re-asks read as drops, so the push is paced like the real
+         * thing. Lock discipline (§7.2): the flag and the sink pointer are
+         * shared with the parser and GATT tasks, so they are sampled under
+         * the lock — `control_nfc_one_push` re-checks and drains under it —
+         * while the notify itself, GATT I/O, stays outside. */
+        control_ctl_lock();
+        bool push_due = s_nfc_notify_pending && s_nfc_push_sink != NULL;
+        bool (*push_sink)(uint8_t, const uint8_t *, size_t) = s_nfc_push_sink;
+        control_ctl_unlock();
+        if (push_due && push_sink != NULL) {
             uint8_t push_sub = 0x05;
             uint8_t push_payload[NFC_TAG_READ_CHUNK + 8u];
             size_t push_n = control_nfc_one_push(&push_sub, push_payload,
                                                  sizeof(push_payload));
-            if (push_n > 0 && !s_nfc_push_sink(push_sub, push_payload, push_n)) {
+            if (push_n > 0 && !push_sink(push_sub, push_payload, push_n)) {
+                control_ctl_lock();
                 s_nfc_notify_pending = false;
+                control_ctl_unlock();
             }
         }
 #endif
@@ -856,21 +864,25 @@ size_t control_nfc_command(uint8_t subcmd, const uint8_t *payload, size_t len, u
      * path entirely, so the ~9 round trips the bench times never pay for their
      * own instrumentation (§6.6, `nfc_trace.h`). */
     nfc_trace_feed(&s_control.nfc_trace, subcmd, payload, len, out, n, control_now_ms());
+#if NFC_TAG_PUSH_READ_DATA
+    /* The push arms independently of the byte knob (`NFC_TAG_BYTE_FOLLOWS_
+     * POLLING`): a bench build may pace the byte one way and the pushes
+     * another — the register-screen ledger's takes mix them deliberately. */
+    if (subcmd == NFC_CMD_READ_DEVICE &&
+        nfc_tag_polling(&s_control.nfc) == NFC_STATE_TAG_DETECTED) {
+        s_nfc_notify_pending = true;
+        s_push_status_first = true;
+        s_push_off = 0;
+    } else if (subcmd == NFC_CMD_START_POLLING || subcmd == NFC_CMD_STOP_POLLING) {
+        s_nfc_notify_pending = false;
+    }
+#endif
 #if NFC_TAG_BYTE_FOLLOWS_POLLING
     if (subcmd == NFC_CMD_READ_DEVICE &&
         nfc_tag_polling(&s_control.nfc) == NFC_STATE_TAG_DETECTED) {
         s_nfc_reading = true;
 #if NFC_TAG_READ_DONE_MS != 0
         s_nfc_reading_since = control_now_ms();
-#endif
-#if NFC_TAG_NOTIFY_READ_DONE || NFC_TAG_PUSH_READ_DATA
-        s_nfc_notify_pending = true;
-#if NFC_TAG_PUSH_READ_DATA
-        s_nfc_notify_pending = true;
-        s_push_status_last = true;
-        s_push_trailer_sent = false;
-        s_push_off = 0;
-#endif
 #endif
     } else if (subcmd == NFC_CMD_START_POLLING || subcmd == NFC_CMD_STOP_POLLING) {
         s_nfc_reading = false;
@@ -886,7 +898,11 @@ size_t control_nfc_command(uint8_t subcmd, const uint8_t *payload, size_t len, u
 #if NFC_TAG_PUSH_READ_DATA
 void control_nfc_set_push_sink(bool (*sink)(uint8_t sub, const uint8_t *payload, size_t len))
 {
+    /* The GATT task registers this; the tick samples it — under the lock on
+     * both sides (§7.2's one-lock discipline). */
+    control_ctl_lock();
     s_nfc_push_sink = sink;
+    control_ctl_unlock();
 }
 #endif
 
@@ -909,23 +925,24 @@ static size_t control_nfc_one_push(uint8_t *sub_out, uint8_t *payload, size_t ca
     uint8_t data[NFC_TAG_READ_CHUNK + 8u];
     size_t n = 0;
     uint8_t sub = NFC_CMD_READ_BUFFER;
-    if (s_push_off < NFC_TAG_SERVED_SIZE) {
+    if (s_push_status_first) {
+        /* The opening frame is the read-done status (the NS1 P3 trailer's
+         * bytes); the *closing* variant — chunks first, trailer last — is the
+         * one that crashed the console twice (`2011-0301`, takes 11–12 of the
+         * register-screen ledger), so the safe order is what the tree builds. */
+        s_push_status_first = false;
+        sub = NFC_CMD_GET_STATUS;
+        n = nfc_tag_command(&s_control.nfc, NFC_CMD_GET_STATUS, NULL, 0, data, sizeof(data));
+        if (n == NFC_STATUS_RESPONSE_SIZE && data[0] == NFC_STATUS_TAG_DETECTED) {
+            data[0] = (uint8_t)NFC_TAG_READ_DONE_STATE;
+        }
+    } else if (s_push_off < NFC_TAG_SERVED_SIZE) {
         uint8_t req[2] = { (uint8_t)(s_push_off & 0xFFu), (uint8_t)(s_push_off >> 8) };
         n = nfc_tag_command(&s_control.nfc, NFC_CMD_READ_BUFFER, req, sizeof(req),
                             data, sizeof(data));
         s_push_off = (uint16_t)(s_push_off + NFC_TAG_READ_CHUNK);
-    } else if (s_push_status_last && !s_push_trailer_sent) {
-        /* The NS1 order: P1, P2, then the P3 trailer — the read-done status is
-         * the *closing* frame of the push, not the opening one. */
-        s_push_trailer_sent = true;
-        sub = NFC_CMD_GET_STATUS;
-        n = nfc_tag_command(&s_control.nfc, NFC_CMD_GET_STATUS, NULL, 0, data, sizeof(data));
-        if (n == NFC_STATUS_RESPONSE_SIZE && data[0] == NFC_STATUS_TAG_DETECTED) {
-            data[0] = (uint8_t)NFC_TAG_NOTIFY_READ_DONE_STATE;
-        }
     }
-    if (n == 0 || (s_push_off >= NFC_TAG_SERVED_SIZE &&
-                   (!s_push_status_last || s_push_trailer_sent))) {
+    if (n == 0 || (!s_push_status_first && s_push_off >= NFC_TAG_SERVED_SIZE)) {
         s_nfc_notify_pending = false;
 #if NFC_TAG_STATUS_DONE_WHEN_READ
         /* The data phase is over: from here the console's `0x05` asks are

@@ -40,6 +40,17 @@ static uint16_t nfc_rd_le16(const uint8_t *p)
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
+/* The `0x15` response's three-byte head: a leading `0x00` then the *wire*
+ * offset echoed little-endian — the captured shape
+ * (`switch2_controller_research/commands.md:66`), shared by the pad path and
+ * the slice path so the echo cannot drift between them. */
+static void nfc_reply_echo_wire(uint8_t *out, uint16_t wire)
+{
+    out[0] = 0x00;
+    out[1] = (uint8_t)(wire & 0xFFu);
+    out[2] = (uint8_t)(wire >> 8);
+}
+
 /* The report byte's one writer, so `state_changed` fires exactly when the byte
  * moves and never on a polling change (§4.9). */
 static void nfc_set_state(nfc_tag_t *nfc, uint8_t state)
@@ -216,7 +227,7 @@ static size_t nfc_reply_status(nfc_tag_t *nfc, uint8_t *out, size_t out_cap)
      * data has been served, the status the console is polling for flips to
      * the read-done state — the NS1 P3 trailer, answered rather than pushed. */
     if (nfc->read_done) {
-        out[0] = (uint8_t)NFC_TAG_NOTIFY_READ_DONE_STATE;
+        out[0] = (uint8_t)NFC_TAG_READ_DONE_STATE;
     }
 #endif
     memcpy(&out[1], nfc_status_flags, sizeof(nfc_status_flags));
@@ -267,9 +278,7 @@ static size_t nfc_reply_read(nfc_tag_t *nfc, const uint8_t *payload, size_t len,
         if (out == NULL || out_cap < 3u + chunk) {
             return 0;
         }
-        out[0] = 0x00;
-        out[1] = (uint8_t)(wire & 0xFFu);
-        out[2] = (uint8_t)(wire >> 8);
+        nfc_reply_echo_wire(out, wire);
         memset(&out[3], 0, chunk);
         return 3u + chunk;
 #else
@@ -285,9 +294,7 @@ static size_t nfc_reply_read(nfc_tag_t *nfc, const uint8_t *payload, size_t len,
     }
     /* The captured response echoes the offset in its own little-endian pair
      * behind a leading `0x00` (`switch2_controller_research/commands.md:66`). */
-    out[0] = 0x00;
-    out[1] = (uint8_t)(wire & 0xFFu);
-    out[2] = (uint8_t)(wire >> 8);
+    nfc_reply_echo_wire(out, wire);
 #if NFC_TAG_BUFFER_P1_PREFIX != 0
     /* The view: 60 bytes of P1 framing, then the image — a chunk may straddle
      * the seam, so both halves are copied explicitly. */
