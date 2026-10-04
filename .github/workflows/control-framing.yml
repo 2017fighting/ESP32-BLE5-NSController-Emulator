@@ -81,6 +81,17 @@ jobs:
               -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_wire" \
               test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
             "$RUNNER_TEMP/test_nfc_tag_wire"
+            # #37's register-screen session added two more view knobs with
+            # their own gated assertions (docs/research/register-screen-bench.md
+            # §4): the zero pad beyond the image and the P1-prefix framing view.
+            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_READ_PAD_TO=0x300u \
+              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_pad" \
+              test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
+            "$RUNNER_TEMP/test_nfc_tag_pad"
+            cc -std=c11 -Wall -Wextra -Werror $flags -DNFC_TAG_BUFFER_P1_PREFIX=1 \
+              -Imain/include -Itest/host -o "$RUNNER_TEMP/test_nfc_tag_p1" \
+              test/host/test_nfc_tag.c main/src/controller/nfc_tag.c
+            "$RUNNER_TEMP/test_nfc_tag_p1"
           done
 
       - name: C — the NFC console-traffic trace (#36)

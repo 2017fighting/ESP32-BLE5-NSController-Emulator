@@ -183,6 +183,15 @@ static void test_status_without_a_tag(void)
 
 /* -------------------------------------------------------------------- 0x15 */
 
+/* The P1-prefix view shifts where the image sits on the wire (the knob's
+ * whole point), so the read-side expectations are written against a
+ * `VIEW_BASE + image_off` address and the content checks gate on the knob. */
+#if NFC_TAG_BUFFER_P1_PREFIX != 0
+#define VIEW_BASE NFC_TAG_P1_PREFIX_SIZE
+#else
+#define VIEW_BASE 0u
+#endif
+
 static void test_read_buffer_slices_page_wise(void)
 {
     nfc_tag_t nfc;
@@ -192,26 +201,54 @@ static void test_read_buffer_slices_page_wise(void)
     nfc_tag_place(&nfc, tag, sizeof(tag), g_now++);
 
     uint8_t out[3 + NFC_TAG_READ_CHUNK];
-    size_t n = read_buffer(&nfc, 0, out, sizeof(out));
+    size_t n = read_buffer(&nfc, VIEW_BASE + 0, out, sizeof(out));
     CHECK(n == 3 + NFC_TAG_READ_CHUNK, "0x15 serves a 64-byte chunk, got %zu", n);
-    CHECK(out[0] == 0x00 && out[1] == (uint8_t)NFC_TAG_READ_WIRE_BASE &&
-              out[2] == (uint8_t)(NFC_TAG_READ_WIRE_BASE >> 8),
+    CHECK(out[0] == 0x00 && out[1] == (uint8_t)(VIEW_BASE + NFC_TAG_READ_WIRE_BASE) &&
+              out[2] == (uint8_t)((VIEW_BASE + NFC_TAG_READ_WIRE_BASE) >> 8),
           "0x15 echoes the requested wire offset behind a leading zero");
     CHECK(memcmp(&out[3], tag, NFC_TAG_READ_CHUNK) == 0, "0x15 serves the image from the offset");
 
-    n = read_buffer(&nfc, 0x40, out, sizeof(out));
+    n = read_buffer(&nfc, VIEW_BASE + 0x40, out, sizeof(out));
     CHECK(n == 3 + NFC_TAG_READ_CHUNK, "a second page-aligned read is a full chunk");
-    CHECK(out[1] == (uint8_t)(0x40u + NFC_TAG_READ_WIRE_BASE),
+    CHECK(out[1] == (uint8_t)(VIEW_BASE + 0x40u + NFC_TAG_READ_WIRE_BASE),
           "the echo carries the wire offset back");
     CHECK(memcmp(&out[3], &tag[0x40], NFC_TAG_READ_CHUNK) == 0, "the slice starts at 0x40");
 
     /* The last partial chunk is 540 - 512 = 28 bytes, not a padded 64. */
-    n = read_buffer(&nfc, 512, out, sizeof(out));
+    n = read_buffer(&nfc, VIEW_BASE + 512, out, sizeof(out));
     CHECK(n == 3 + 28, "the tail is served short, got %zu", n);
     CHECK(memcmp(&out[3], &tag[512], 28) == 0, "the tail carries the last 28 bytes");
 
+#if NFC_TAG_BUFFER_P1_PREFIX != 0
+    /* The view's seam: wire 0 opens the framing, the image lands at 0x3C — the
+     * constant shift the canonical capture's `0x46`→image-`0x0A` implies — and
+     * a straddling chunk bridges both halves. */
+    n = read_buffer(&nfc, 0, out, sizeof(out));
+    CHECK(n == 3 + NFC_TAG_READ_CHUNK, "wire 0 serves a full framing chunk");
+    CHECK(out[3] == 0x3a && out[4] == 0x00 && out[5] == 0x07,
+          "the framing opens with the P1 header");
+    n = read_buffer(&nfc, NFC_TAG_P1_PREFIX_SIZE - 4, out, sizeof(out));
+    CHECK(n == 3 + NFC_TAG_READ_CHUNK, "the seam chunk is full");
+    CHECK(memcmp(&out[3 + 4], tag, NFC_TAG_READ_CHUNK - 4) == 0,
+          "the seam chunk bridges the framing into the image");
+    CHECK(read_buffer(&nfc, NFC_TAG_SERVED_SIZE, out, sizeof(out)) == 0,
+          "an offset past the served space has nothing to serve");
+#elif NFC_TAG_READ_PAD_TO != 0
+    /* The bench pad (§6.6): in-space asks beyond the image are zero-filled
+     * chunks — an empty answer is what aborts the console's cycle — and only
+     * asks past the pad have nothing. */
+    n = read_buffer(&nfc, NFC_TAG_SIZE, out, sizeof(out));
+    CHECK(n == 3 + (NFC_TAG_READ_PAD_TO - NFC_TAG_SIZE > NFC_TAG_READ_CHUNK
+                        ? NFC_TAG_READ_CHUNK
+                        : NFC_TAG_READ_PAD_TO - NFC_TAG_SIZE),
+          "the pad serves a chunk past the image, got %zu", n);
+    CHECK(out[3] == 0x00 && out[4] == 0x00, "the pad is zero-filled");
+    CHECK(read_buffer(&nfc, NFC_TAG_READ_PAD_TO, out, sizeof(out)) == 0,
+          "an offset past the pad has nothing to serve");
+#else
     CHECK(read_buffer(&nfc, NFC_TAG_SIZE, out, sizeof(out)) == 0,
           "an offset at the image's end has nothing to serve");
+#endif
     CHECK(nfc_tag_command(&nfc, NFC_CMD_READ_BUFFER, (const uint8_t[]){0x01}, 1, out, sizeof(out)) ==
               0,
           "a truncated 0x15 request is refused");
@@ -473,7 +510,7 @@ static void test_write_buffer_is_volatile(void)
           "0x14 answers with no payload");
 
     uint8_t out[3 + NFC_TAG_READ_CHUNK];
-    read_buffer(&nfc, 0x10, out, sizeof(out));
+    read_buffer(&nfc, VIEW_BASE + 0x10, out, sizeof(out));
     const uint8_t written[4] = {0xDE, 0xAD, 0xBE, 0xEF};
     CHECK(memcmp(&out[3], written, sizeof(written)) == 0,
           "the write-back is served while the tag is placed");
@@ -481,7 +518,7 @@ static void test_write_buffer_is_volatile(void)
     /* The next placement is virgin by design, so the write-back is gone. */
     nfc_tag_unplace(&nfc);
     nfc_tag_place(&nfc, tag, sizeof(tag), g_now++);
-    read_buffer(&nfc, 0x10, out, sizeof(out));
+    read_buffer(&nfc, VIEW_BASE + 0x10, out, sizeof(out));
     CHECK(memcmp(&out[3], &tag[0x10], sizeof(written)) == 0,
           "a write-back is discarded on unplace (§6.5)");
 }
@@ -499,14 +536,14 @@ static void test_write_buffer_is_bounded(void)
     CHECK(nfc_tag_command(&nfc, NFC_CMD_WRITE_BUFFER, lying, sizeof(lying), NULL, 0) == 0,
           "an over-long 0x14 is accepted and clamped");
     uint8_t out[3 + NFC_TAG_READ_CHUNK];
-    read_buffer(&nfc, 0, out, sizeof(out));
+    read_buffer(&nfc, VIEW_BASE + 0, out, sizeof(out));
     CHECK(out[3] == 0xAA, "the one byte that did arrive landed at offset 0");
     CHECK(out[4] == tag[1], "the bytes that did not arrive were left alone");
 
     /* An offset past the image writes nothing. */
     const uint8_t past[5] = {NFC_TAG_SIZE & 0xFFu, NFC_TAG_SIZE >> 8, 0x01, 0x00, 0x55};
     nfc_tag_command(&nfc, NFC_CMD_WRITE_BUFFER, past, sizeof(past), NULL, 0);
-    read_buffer(&nfc, NFC_TAG_SIZE - 4, out, sizeof(out));
+    read_buffer(&nfc, VIEW_BASE + NFC_TAG_SIZE - 4, out, sizeof(out));
     CHECK(memcmp(&out[3], &tag[NFC_TAG_SIZE - 4], 4) == 0, "an out-of-range write is dropped");
 
     /* A truncated request is dropped rather than read past. */

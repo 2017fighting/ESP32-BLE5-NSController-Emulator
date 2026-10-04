@@ -143,6 +143,8 @@ async def main() -> int:
     parser.add_argument("--key", default=None, help="key_retail.bin (default: the corpus's)")
     parser.add_argument("--dry-run", action="store_true",
                         help="compile offline and print the plan; never touch a device")
+    parser.add_argument("--tee-all", action="store_true",
+                        help="tee every device log line, not just the NFC ones")
     args = parser.parse_args()
 
     if args.seq is None and args.fifo is None:
@@ -210,7 +212,9 @@ async def main() -> int:
                 # The stream also yields ("state", …) events, which carry no
                 # "message" key — the name is checked before the key is read.
                 if name == "log" and (
-                    "console nfc:" in payload["message"] or "nfc byte:" in payload["message"]
+                    args.tee_all
+                    or "console nfc:" in payload["message"]
+                    or "nfc byte:" in payload["message"]
                 ):
                     log(f"  device: {payload['message']}")
 

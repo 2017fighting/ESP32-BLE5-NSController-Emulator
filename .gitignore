@@ -104,3 +104,4 @@ Desktop.ini
 # The global excludes also carry a [Ll]ib rule, which would hide the product
 # UI's shadcn helper directory. Re-include it so container/web/src/lib is tracked.
 !container/web/src/lib/
+build-bench/

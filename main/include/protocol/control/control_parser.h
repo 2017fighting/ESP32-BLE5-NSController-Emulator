@@ -12,6 +12,8 @@
 
 #include "protocol/protocol.h"
 
+#include "controller/nfc_tag.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -58,6 +60,13 @@ void control_notify_bond(uint8_t bond);
  */
 size_t control_nfc_command(uint8_t subcmd, const uint8_t *payload, size_t len, uint8_t *out,
                            size_t out_cap);
+
+#if NFC_TAG_PUSH_READ_DATA
+/* The bench's whole-tag push (see `nfc_tag.h`), paced by the control tick:
+ * the GATT layer registers a sink (`control_nfc_set_push_sink`) that composes
+ * and notifies one frame per 10 ms. */
+void control_nfc_set_push_sink(bool (*sink)(uint8_t sub, const uint8_t *payload, size_t len));
+#endif
 
 /*
  * The console's own connection interval, in 1.25 ms units, straight from the BLE

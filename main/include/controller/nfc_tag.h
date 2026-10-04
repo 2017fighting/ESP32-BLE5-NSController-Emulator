@@ -100,6 +100,101 @@ extern "C" {
 #define NFC_TAG_BYTE_FOLLOWS_POLLING 0
 #endif
 
+/* The byte's value while `0x06`'s read is armed (#39's suspect 2, now with the
+ * NS1 decode behind it): a real controller reports the read's *completion* on
+ * its status channel, and the NS1 capture of the whole exchange ends the data
+ * phase with state `0x04` — the `2a 00 05 00 00 09 31 04 …` trailer after the
+ * two pushed data packets (`elmagnificogi_nsre` `nfc_debug/output_receive.txt`,
+ * the same trailer Poohl's `mcu.py` queues). The NS2 replaced the push with the
+ * console's `0x15` pulls, and the input report's NFC byte (values 0x00–0x07)
+ * is the only completion signal left in the input stream — so the bench's
+ * first try is `0x04` (read done), replacing the earlier blind `0x03` guess.
+ * Default `0x03`: the value the #39 build shipped, so nothing changes unless
+ * a bench build asks for the hypothesis. */
+#ifndef NFC_TAG_READ_DONE_BYTE
+#define NFC_TAG_READ_DONE_BYTE 0x03u
+#endif
+
+/* The follow-up push after `0x06` (the register-screen session, 2026-10-04):
+ * with the byte at `0x04` and a full-log tee, the console sent *nothing* for
+ * the whole 3.0 s window (`d0 07` reads as a 2000 ms deadline) — it waits for
+ * a device-initiated notification, and the NS1 P3 trailer says that
+ * notification is a *status line* with the read-complete state. Hypothesis:
+ * the NS2 `0x05` payload's byte 0 *is* the state (09 = tag/POLL_AGAIN,
+ * 00 = none), so the completion push is a sub-0x05 notification whose payload
+ * opens `NFC_TAG_NOTIFY_READ_DONE_STATE` (default `04`, the NS1 read-complete
+ * value). Default OFF; device-side only. */
+#ifndef NFC_TAG_NOTIFY_READ_DONE
+#define NFC_TAG_NOTIFY_READ_DONE 0
+#endif
+#ifndef NFC_TAG_NOTIFY_READ_DONE_STATE
+#define NFC_TAG_NOTIFY_READ_DONE_STATE 0x04u
+#endif
+
+/* The push variant after the status-only push was ignored (same session):
+ * the NS1 answer to the read command was the *data itself* — P1/P2 pushed in
+ * the input stream — so this knob pushes the whole 540-byte tag as sub-0x15-
+ * shaped notifications right after the `0x06` ACK (one `0x05` read-done status
+ * first, then 64-byte chunks at plain image offsets 0, 64, … 512). Default
+ * OFF; device-side only; the console's own `0x15` asks still take the normal
+ * response path. */
+#ifndef NFC_TAG_PUSH_READ_DATA
+#define NFC_TAG_PUSH_READ_DATA 0
+#endif
+
+/* The served-space pad (register-screen session, cycle 2): once pulling, the
+ * console samples 64-aligned offsets across a space larger than the image —
+ * asks at 0x240/0x280/0x2c0 were observed against the 540-byte tag — and an
+ * out-of-range ask currently answers *nothing*, which aborts the cycle. This
+ * knob pads the served space to `NFC_TAG_READ_PAD_TO` bytes, image verbatim at
+ * offset 0 and zeros beyond, so every in-space ask gets a well-formed chunk.
+ * Default 0 (the spec's plain 540-byte space). */
+#ifndef NFC_TAG_READ_PAD_TO
+#define NFC_TAG_READ_PAD_TO 0
+#endif
+#if NFC_TAG_READ_PAD_TO != 0 && NFC_TAG_READ_PAD_TO <= NFC_TAG_SIZE
+#error "NFC_TAG_READ_PAD_TO must exceed the image size or be 0"
+#endif
+
+/* The P1-prefix buffer view (register-screen session, cycle 5 — the session's
+ * synthesis): the console's `0x15` pull at wire 0x0000 follows our `04` status
+ * answer within 30 ms, and the canonical capture's wire 0x46 maps to image
+ * 0x0A — a constant 0x3C=60-byte shift. The NS1 P1 packet's framing minus its
+ * UID field is exactly 60 bytes (15 header + 4 zeros + 32 magic + 9 echoed
+ * page-ranges), so the served space becomes [60 B framing][540 B image] and
+ * the image starts at wire 0x3C. Default OFF: the plain image-at-0 view. */
+#ifndef NFC_TAG_BUFFER_P1_PREFIX
+#define NFC_TAG_BUFFER_P1_PREFIX 0
+#endif
+#if NFC_TAG_BUFFER_P1_PREFIX != 0
+#define NFC_TAG_P1_PREFIX_SIZE 60u
+#define NFC_TAG_SERVED_SIZE (NFC_TAG_P1_PREFIX_SIZE + NFC_TAG_SIZE)
+#else
+#define NFC_TAG_SERVED_SIZE NFC_TAG_SIZE
+#endif
+
+/* The `0x05` answer's lifecycle (register-screen session, cycle 4): the console
+ * re-asks `0x05` with repeats through the whole read window — it is polling
+ * for the read to complete — and the NS1 lifecycle carries that on the status
+ * line's state byte (`09` tag → `04` read done). The 04-as-a-push variant was
+ * discarded as unrequested; this knob flips the *answer* to a pending `0x05`
+ * to `NFC_TAG_NOTIFY_READ_DONE_STATE` once the armed read's data has been
+ * served, back to `09` on the next poll cycle. Default OFF. */
+#ifndef NFC_TAG_STATUS_DONE_WHEN_READ
+#define NFC_TAG_STATUS_DONE_WHEN_READ 0
+#endif
+
+/* How long the read-done byte is held before the byte returns to the tag-
+ * present `0x02` (register-screen session, cycle 3): the NS1 lifecycle ends
+ * its read at `04` only *between* the data phase and the return to `09`
+ * (tag still in field) — the console's asks land in the first ~120 ms after
+ * `0x06`, then it waits out its ~3 s deadline, which smells like a console
+ * blocked on the byte returning. Default 0 holds the done byte until the
+ * console restarts or stops polling (the previous behaviour). */
+#ifndef NFC_TAG_READ_DONE_MS
+#define NFC_TAG_READ_DONE_MS 0
+#endif
+
 /* §6.1/§6.3: the identity is the seven-byte NFC UID. */
 #define NFC_TAG_UID_SIZE 7u
 
@@ -154,6 +249,9 @@ typedef struct {
 typedef struct {
     uint8_t tag[NFC_TAG_SIZE];
     bool placed;     /* the tag is answering reads */
+#if NFC_TAG_STATUS_DONE_WHEN_READ
+    bool read_done;  /* the armed read has been served: `0x05` answers 04 */
+#endif
     bool staged;     /* a replacement's bytes are committed and the gap is open */
     uint8_t state;   /* the report byte: NFC_STATE_IDLE or NFC_STATE_TAG_DETECTED */
     uint8_t polling; /* the console's level: NFC_STATE_IDLE/POLLING/TAG_DETECTED */
@@ -202,6 +300,12 @@ uint8_t nfc_tag_state(const nfc_tag_t *nfc);
 uint8_t nfc_tag_polling(const nfc_tag_t *nfc);
 
 bool nfc_tag_placed(const nfc_tag_t *nfc);
+
+#if NFC_TAG_STATUS_DONE_WHEN_READ
+/* Mark the armed read as served (or clear it): `0x05` answers flip to the
+ * read-done state until the next poll cycle. See `nfc_tag.h`'s knob. */
+void nfc_tag_set_read_done(nfc_tag_t *nfc, bool done);
+#endif
 
 /* §6.3: `UID[0..2]` then `UID[3..6]`, skipping the `BCC0` check byte at byte 3. */
 void nfc_tag_identity(const nfc_tag_t *nfc, uint8_t out[NFC_TAG_UID_SIZE]);

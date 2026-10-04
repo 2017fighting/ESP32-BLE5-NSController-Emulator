@@ -2,6 +2,7 @@
 #include "pro2.h"
 #include "ns2_codec.h"
 #include "utils.h"
+#include "protocol/control/control_parser.h"
 
 // #region GATT UUID
 
@@ -275,6 +276,36 @@ static int gatt_svc_0x01_07_access(uint16_t conn_handle, uint16_t attr_handle,
     return BLE_ATT_ERR_UNLIKELY;
 }
 
+#if NFC_TAG_PUSH_READ_DATA
+/* The paced-push sink (see `nfc_tag.h`): the control tick hands it one
+ * (subcmd, payload) every 10 ms and this composes the frame `cmd_process`
+ * would — the echoed request shape with the response direction and the `10 78`
+ * magic; byte 3 carries the transport the console's own `0x05` asks used
+ * (`00`, per the canonical capture). The connection comes from the console's
+ * `0x001e` subscription, the same state the response path relies on. */
+static bool nfc_push_sink(uint8_t sub, const uint8_t *payload, size_t len)
+{
+  g_subscribe_state_t *st = subscribe_entry_get(gatt_svr_chr_001e_val_handle);
+  if (st == NULL || !st->notify_enabled || payload == NULL || len == 0) {
+    return false;
+  }
+  uint8_t frame[PRO2_DATA_EMPTY_LEN + 8u + NFC_TAG_READ_CHUNK + 3u];
+  memset(frame, 0, sizeof(frame));
+  uint8_t *h = frame + PRO2_DATA_EMPTY_LEN;
+  h[0] = 0x01;
+  h[1] = 0x01;
+  h[2] = 0x00;
+  h[3] = sub;
+  h[4] = 0x10;
+  h[5] = 0x78;
+  h[6] = 0x00;
+  h[7] = 0x00;
+  memcpy(h + 8, payload, len);
+  return gatt_notify(st->conn_handle, gatt_svr_chr_001e_val_handle, frame,
+                     PRO2_DATA_EMPTY_LEN + 8u + len) == 0;
+}
+#endif
+
 static int gatt_svc_write_no_rsp_access(uint16_t conn_handle, uint16_t attr_handle,
   struct ble_gatt_access_ctxt* ctxt, void* arg) {
   uint8_t opcode = ctxt->op;
@@ -324,6 +355,12 @@ static int gatt_svc_write_no_rsp_access(uint16_t conn_handle, uint16_t attr_hand
       } else {
         // send notify use 0x001e
         rc = gatt_notify(conn_handle, gatt_svr_chr_001e_val_handle, rsp->rsp_data, rsp->rsp_len);
+#if NFC_TAG_PUSH_READ_DATA
+        /* The post-`0x06` pushes are the control tick's now (paced, one per
+         * 10 ms, via `nfc_push_sink`) — the burst variant lives in the bench
+         * history, not here. */
+        control_nfc_set_push_sink(nfc_push_sink);
+#endif
       }
 
       // Cleanup allocated resources

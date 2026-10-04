@@ -17,6 +17,24 @@
  * fields nobody has decoded would be worse than echoing what was observed. */
 static const uint8_t nfc_status_flags[7] = {0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x00};
 
+#if NFC_TAG_BUFFER_P1_PREFIX != 0
+/* The served space's 60-byte framing head: the NS1 P1 packet's prefix minus
+ * its UID field (15 header + 4 zeros + 32 magic + 9 echoed page-ranges),
+ * byte-for-byte from `elmagnificogi_nsre`'s real capture. The magic blob is
+ * the constant both the real controller and Poohl's emulation carry; the
+ * ranges echo the canonical full-tag read the console's `0x06` asks for. */
+static const uint8_t nfc_p1_prefix[NFC_TAG_P1_PREFIX_SIZE] = {
+    0x3a, 0x00, 0x07, 0x01, 0x00, 0x01, 0x31, 0x02, 0x00, 0x00,
+    0x00, 0x01, 0x02, 0x00, 0x07,
+    0x00, 0x00, 0x00, 0x00,
+    0x7d, 0xfd, 0xf0, 0x79, 0x36, 0x51, 0xab, 0xd7, 0x46, 0x6e,
+    0x39, 0xc1, 0x91, 0xba, 0xbe, 0xb8, 0x56, 0xce, 0xed, 0xf1,
+    0xce, 0x44, 0xcc, 0x75, 0xea, 0xfb, 0x27, 0x09, 0x4d, 0x08,
+    0x7a, 0xe8,
+    0x03, 0x00, 0x3b, 0x3c, 0x77, 0x78, 0x86, 0x00, 0x00,
+};
+#endif
+
 static uint16_t nfc_rd_le16(const uint8_t *p)
 {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
@@ -73,6 +91,15 @@ bool nfc_tag_placed(const nfc_tag_t *nfc)
     return nfc != NULL && nfc->placed;
 }
 
+#if NFC_TAG_STATUS_DONE_WHEN_READ
+void nfc_tag_set_read_done(nfc_tag_t *nfc, bool done)
+{
+    if (nfc != NULL) {
+        nfc->read_done = done;
+    }
+}
+#endif
+
 void nfc_tag_identity(const nfc_tag_t *nfc, uint8_t out[NFC_TAG_UID_SIZE])
 {
     if (nfc == NULL || out == NULL) {
@@ -115,6 +142,9 @@ void nfc_tag_place(nfc_tag_t *nfc, const uint8_t *tag, size_t len, uint32_t now_
 
     nfc->placed = true;
     nfc->staged = false;
+#if NFC_TAG_STATUS_DONE_WHEN_READ
+    nfc->read_done = false;
+#endif
     /* The console's level follows a placement: if it was asking, the answer is
      * now "tag detected". It does not create an ask where there was none — the
      * report byte is what prompts the console, and it is separate (§4.9). */
@@ -150,6 +180,9 @@ void nfc_tag_unplace(nfc_tag_t *nfc)
     }
     nfc->placed = false;
     nfc->staged = false;
+#if NFC_TAG_STATUS_DONE_WHEN_READ
+    nfc->read_done = false;
+#endif
     /* The console is still asking; it just has nothing to scan now. */
     if (nfc->polling == NFC_STATE_TAG_DETECTED) {
         nfc->polling = NFC_STATE_POLLING;
@@ -178,6 +211,14 @@ static size_t nfc_reply_status(nfc_tag_t *nfc, uint8_t *out, size_t out_cap)
     }
 
     out[0] = NFC_STATUS_TAG_DETECTED;
+#if NFC_TAG_STATUS_DONE_WHEN_READ
+    /* The bench's answer lifecycle (see `nfc_tag.h`): once the armed read's
+     * data has been served, the status the console is polling for flips to
+     * the read-done state — the NS1 P3 trailer, answered rather than pushed. */
+    if (nfc->read_done) {
+        out[0] = (uint8_t)NFC_TAG_NOTIFY_READ_DONE_STATE;
+    }
+#endif
     memcpy(&out[1], nfc_status_flags, sizeof(nfc_status_flags));
     out[8] = (uint8_t)NFC_TAG_UID_SIZE;
     nfc_tag_identity(nfc, &out[9]);
@@ -211,10 +252,31 @@ static size_t nfc_reply_read(nfc_tag_t *nfc, const uint8_t *payload, size_t len,
 #else
     uint16_t offset = wire;
 #endif
-    if (offset >= NFC_TAG_SIZE) {
+    if (offset >= NFC_TAG_SERVED_SIZE) {
+#if NFC_TAG_READ_PAD_TO != 0
+        /* The bench pad (§6.6's open offset space, `nfc_tag.h`): the console
+         * samples past the image, and an empty answer aborts its cycle — so
+         * in-space asks beyond the image get zero-filled chunks instead. */
+        if (offset >= NFC_TAG_READ_PAD_TO) {
+            return 0;
+        }
+        size_t chunk = NFC_TAG_READ_PAD_TO - offset;
+        if (chunk > NFC_TAG_READ_CHUNK) {
+            chunk = NFC_TAG_READ_CHUNK;
+        }
+        if (out == NULL || out_cap < 3u + chunk) {
+            return 0;
+        }
+        out[0] = 0x00;
+        out[1] = (uint8_t)(wire & 0xFFu);
+        out[2] = (uint8_t)(wire >> 8);
+        memset(&out[3], 0, chunk);
+        return 3u + chunk;
+#else
         return 0;
+#endif
     }
-    size_t chunk = NFC_TAG_SIZE - offset;
+    size_t chunk = NFC_TAG_SERVED_SIZE - offset;
     if (chunk > NFC_TAG_READ_CHUNK) {
         chunk = NFC_TAG_READ_CHUNK;
     }
@@ -226,7 +288,27 @@ static size_t nfc_reply_read(nfc_tag_t *nfc, const uint8_t *payload, size_t len,
     out[0] = 0x00;
     out[1] = (uint8_t)(wire & 0xFFu);
     out[2] = (uint8_t)(wire >> 8);
+#if NFC_TAG_BUFFER_P1_PREFIX != 0
+    /* The view: 60 bytes of P1 framing, then the image — a chunk may straddle
+     * the seam, so both halves are copied explicitly. */
+    {
+        size_t from_prefix = 0u;
+        if (offset < NFC_TAG_P1_PREFIX_SIZE) {
+            from_prefix = NFC_TAG_P1_PREFIX_SIZE - offset;
+            if (from_prefix > chunk) {
+                from_prefix = chunk;
+            }
+            memcpy(&out[3], &nfc_p1_prefix[offset], from_prefix);
+        }
+        if (from_prefix < chunk) {
+            memcpy(&out[3 + from_prefix],
+                   &nfc->tag[offset + from_prefix - NFC_TAG_P1_PREFIX_SIZE],
+                   chunk - from_prefix);
+        }
+    }
+#else
     memcpy(&out[3], &nfc->tag[offset], chunk);
+#endif
     return 3u + chunk;
 }
 
@@ -273,6 +355,9 @@ size_t nfc_tag_command(nfc_tag_t *nfc, uint8_t subcmd, const uint8_t *payload, s
          * with none (including during a gap) the level is `polling`. The report
          * byte is untouched — a poll in `IDLE`/`MACRO` must not look like
          * `AMIIBO` (§4.9). */
+#if NFC_TAG_STATUS_DONE_WHEN_READ
+        nfc->read_done = false;
+#endif
         nfc->polling = nfc->placed ? NFC_STATE_TAG_DETECTED : NFC_STATE_POLLING;
         return 0;
     case NFC_CMD_STOP_POLLING: {

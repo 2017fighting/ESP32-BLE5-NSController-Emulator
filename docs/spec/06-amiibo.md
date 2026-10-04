@@ -207,7 +207,39 @@ and they are firmware changes rather than protocol changes:
   | `0x15` read buffer | `offset` u16 (LE) | `0x00` · `offset` u16 (LE) · up to 64 bytes of the image |
   | `0x14` write buffer | `offset` u16 (LE) · `len` u16 (LE) · `len` bytes | — (taken into the volatile tag) |
   | `0x05` get status | — | 61 B: status `0x09` + the captured flags + `0x07` + the 7-byte UID; all-zero beyond the status `0x00` when no tag is placed |
-  | `0x03`/`0x04`/`0x06` | — | — (ACK) |
+  | `0x03`/`0x04`/`0x06` | `0x03`: 5 B poll config; `0x06`: **the read command** — marker `d0`, UID length `07`, UID (`00×7` = read any tag), `01` NTAG215-only, `03` page ranges `00–3b/3c–77/78–86` = all 135 pages (`ns1-nfc-read-decode.md` §1) | — (ACK) |
+
+- **`0x06` decoded, and what it implies for the read gate.** The NS1 capture of the same
+  exchange (`elmagnificogi_nsre`, context tier) shows the payload commands the *reader* to
+  read the whole tag into its buffer; the console then waits for a completion signal before
+  collecting it with `0x15`. On NS1 that signal is the status line's state byte moving to
+  `04` (the `09 31 04` trailer after the pushed data); on NS2 the status response carries no
+  state byte (the seven "flags" are the constant trailer both sides append,
+  `ns1-nfc-read-decode.md` §3), so the only completion channel left is the input report's NFC
+  byte — and the bench's `0x03`-after-`0x06` guess is retired in favour of the hypothesis
+  knob `NFC_TAG_READ_DONE_BYTE` (`nfc_tag.h`, default `0x03` for build compatibility; the
+  bench build sets `0x04`). The `0x05` flags and the bare `0x06` ACK stay as weakened
+  fallback suspects (`amiibo-game-surface-bench.md` §4).
+- **The read pipeline opens — measured on the register screen (`register-screen-bench.md`).**
+  The register screen binds its read to the controller that pressed A into it (the prompt's
+  icon; #36's "console's own reader" was an artefact of the operator's own navigation), and
+  re-arms the full read every ~3.1 s. Three facts now order the flow: the console sends
+  **nothing** in its ~3 s post-`0x06` window (it waits on device pushes); a **whole-tag push
+  of `0x15`-shaped notifications** unlocks the console's own `0x15` pulls — the first ever
+  observed against this device; and a `0x05` **answer** carrying the read-done state `04`
+  triggers the first pull within 30 ms (the same bytes pushed unsolicited are ignored — the
+  console's response parser correlates by subcommand). The remaining gate is the
+  *continuation* — the console pulls one chunk and stops (`register-screen-bench.md` §3) —
+  and three frame combinations **crashed the console's amiibo module** (`2011-0301`, forced
+  reboot; G-18). The bench knobs for all of it are in the tree, default OFF
+  (`nfc_tag.h`: `NFC_TAG_PUSH_READ_DATA`, `NFC_TAG_STATUS_DONE_WHEN_READ`,
+  `NFC_TAG_READ_DONE_BYTE/MS`, `NFC_TAG_READ_PAD_TO`, `NFC_TAG_BUFFER_P1_PREFIX` — the last
+  serves `[60 B P1 framing][image]`, the layout the canonical `0x46`→image-`0x0A` shift
+  implies, host-tested under its own compile).
+- **The `0x14` payload is framed, not a raw slice (G-17).** The canonical write capture's
+  data opens `d0 07 <uid7> 01 …` — the NS1 write-setup framing, not image bytes at an offset.
+  The served shape above keeps the header reading (offset+len, as captured) but the bytes
+  stored are framed until G-17's decode lands; no write has ever arrived to exercise it.
 
 - **The console-facing *offset* space is still unverified.** The canonical capture reads at
   wire offset `0x46` and the returned data opens on the image's static-lock/capability bytes at
