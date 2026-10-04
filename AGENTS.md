@@ -16,7 +16,7 @@ Single-context: one `CONTEXT.md` plus `docs/adr/` at the repo root, created lazi
 
 ### Spec
 
-The locked design lives under `docs/spec/` (start at `00-index.md`, which lists the chapters and the ADR selection). Implementation follows `docs/spec/12-handoff.md`: its order, its bench-validation list, and its **known-gap register** (G-1…G-16). If code contradicts a chapter, that is a bug in one of them — surface it rather than silently following the code.
+The locked design lives under `docs/spec/` (start at `00-index.md`, which lists the chapters and the ADR selection). Implementation follows `docs/spec/12-handoff.md`: its order, its bench-validation list, and its **known-gap register** (G-1…G-19). If code contradicts a chapter, that is a bug in one of them — surface it rather than silently following the code.
 
 ### External references
 

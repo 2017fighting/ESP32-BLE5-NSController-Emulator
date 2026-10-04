@@ -39,13 +39,13 @@
  * the vocabulary and never on the wire (a placed tag is the only `AMIIBO` state,
  * so the byte is `0x00` or `0x02` and nothing between).
  *
- * **Two byte sequences are deliberately not decided here.** The console-facing
- * *offset spaces* of `0x14`/`0x15` are unverified against a real console — the
- * canonical capture (`switch2_controller_research/commands.md:64-66`) shows a
- * read at `0x46` and a write at `0x0000`, which are not the same coordinate; this
- * module serves and writes plain byte offsets into the 540-byte image and leaves
- * the mapping to bench validation 5 (§12.2). The shapes it does implement are the
- * captured ones:
+ * **The capture's read shapes are known and this module still serves the
+ * superseded ones** — a firmware defect, not a design choice (spec §6.6, gap
+ * G-19). The `0x15` answer's three-byte head is `last` u8 · `len` u16 (LE), not
+ * the offset echo below; one chunk is 70 bytes; and the request's offset is into
+ * a `[60 B framing][540 B image]` space, so `image = wire − 0x3C`
+ * (`switch2_controller_research/commands.md:68` — the request's own `46 00` is
+ * the 70 bytes already consumed). What this module does today:
  *
  *     0x15 request   offset u16 (LE)
  *     0x15 response  0x00 · offset u16 (LE) · up to 64 bytes of the image
@@ -63,20 +63,24 @@ extern "C" {
 /* §6.2: the tag is the raw 540-byte NTAG215 image — 135 pages x 4 B. */
 #define NFC_TAG_SIZE 540u
 
-/* §7.7/§7.4: a `0x15` response is 8 + 3 + 64 = 75 bytes on the wire, so one
- * read carries 64 bytes — 16 pages — and the whole tag is 9 round trips. */
+/* §7.7/§7.4: the capture's `0x15` response is 8 + 3 + 70 = 81 bytes on the wire
+ * and carries 70 bytes over a 600-byte served space (`image = wire − 0x3C`), so
+ * the whole read is still 9 round trips (§6.6). This constant is the superseded
+ * 64 — the shipped build's chunk — kept until G-19's fix lands so the host suite
+ * and the bench builds keep their meaning. */
 #define NFC_TAG_READ_CHUNK 64u
 
-/* §6.6's open offset-space question, as the bench's one knob (§12.2 validation
- * 5, issue #36). The canonical capture reads at wire offset `0x46` the bytes
- * that sit at tag-image offset `0x0A` — the corpus's own page 2 carries
- * `0F E0`, so the capture's leading `0f e0` is the image verbatim and §6.6's
- * "first 16-bit word transposed" was a misreading of the lock bytes — which
- * makes the hypothesis *wire = image + 0x3C*, unverified. The spec's default
- * is **plain** (`0`): the console's wire offset is the image offset. A bench
- * build can define this to the hypothesised base and test the mapping in one
- * reflash; if validation 5 confirms a constant, the confirmed value becomes
- * the spec's and this default changes with a §6.6 amendment.
+/* §6.6's offset mapping, settled by arithmetic rather than a capture session:
+ * the canonical capture reads at wire offset `0x46` the bytes that sit at
+ * tag-image offset `0x0A` — the corpus's own page 2 carries `0F E0`, so the
+ * capture's leading `0f e0` is the image verbatim and the earlier "first 16-bit
+ * word transposed" reading was wrong — a constant 60 = `0x3C`, which is exactly
+ * the framing head's own length: the wire space *is* the 600-byte read buffer.
+ *
+ * The default is still **plain** (`0`), which is G-19's defect to flip: the
+ * console's wire offset should be read as `wire − 0x3C` into the image, with the
+ * first 60 wire bytes serving the framing head. The knob stays so a bench build
+ * can still compare the two views in one reflash.
  *
  * Reads (`0x15`) only. The one captured write (`0x14` at wire `0x0000`) fits no
  * offset shift — its payload opens on the write counter, not the image — so
@@ -244,7 +248,7 @@ extern "C" {
 #define NFC_TAG_UID_SIZE 7u
 
 /* §3.3's `0x05` response: status, flags, UID length and UID in the captured
- * layout (`switch2_controller_research/commands.md:33`). */
+ * layout (`switch2_controller_research/commands.md:63`). */
 #define NFC_STATUS_RESPONSE_SIZE 61u
 
 /* §6.5's tag-absent gap, held on the wire before the new tag answers. Two report

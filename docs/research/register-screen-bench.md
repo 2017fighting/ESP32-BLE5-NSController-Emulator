@@ -1,5 +1,11 @@
 # The register screen: the read pipeline opens, the pull gate falls, and the console's crash mode (issue #37's surface)
 
+> **Superseded in part (spec §6.6, G-19).** Every build in this record served the superseded
+> `0x15` shapes — the offset-echo head, the 64-byte chunk, the image at plain offset 0, and
+> silence for out-of-range asks. The runs, the probe pattern and the crash ledger stand as the
+> record of what happened; the *factors* they isolate are re-read in §12.3/G-18, and the shapes
+> they were built on are now the defect G-19 names.
+
 **Scope:** the operator-requested session on 系统设置 → amiibo → 添加所有者和昵称
 (register owner and nickname), testing the operator's theory that the screen's read binds to
 whichever controller pressed A to enter it. Run 2026-10-04 10:53–11:45, operator-coached, the

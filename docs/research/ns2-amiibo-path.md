@@ -13,6 +13,10 @@
 > Inline notes follow the §11 style in `s3-bringup.md`; they are in §1 item 3,
 > Q3, Q5's prerequisites, §6.3, §7.1 and §8.
 >
+> **Also superseded on the read shapes (spec §6.6, G-19).** This document plans a 64-byte slice of
+> a 540-byte buffer. The capture's read is 70-byte chunks over a `[60 B framing][540 B image]`
+> space, and the `0x15` head is `last` · `len` u16 (LE) rather than an offset echo.
+>
 > Provenance of the `amiitool` symbols named below (`nfc3d_amiibo_pack()`,
 > `nfc3d_amiibo_unpack()`): the canonical `amiitool` pin is **not cloned
 > locally**, and the witness read in this session is the C port inside the

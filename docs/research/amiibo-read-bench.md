@@ -1,5 +1,12 @@
 # The console's NFC polling and the 540-byte read — the failure point, precisely (issue #36)
 
+> **Superseded in part (spec §6.6, G-19).** The wire shapes this bench was steered by were the
+> older reading of one capture line: the `0x15` head is `last` · `len` u16 (not an offset echo),
+> the chunk is 70 bytes (not 64), and the request's offset is into a `[60 B framing][540 B
+> image]` space (`image = wire − 0x3C`). The *questions*, the surface findings and the
+> `nfc_trace` instrument below stand as written; only the shapes the device served were the
+> superseded ones.
+
 **Scope:** §12.2 validations 4 and 5 — *does the console poll a served tag, and does it read all
 540 bytes?* — plus **G-12** and one lifecycle hazard nobody had seen before. **Date:** 2026-10-04.
 **Hardware on test host:** the same ESP32-S3-N16R8 on the CH9102 bridge as #33–#38 (serial

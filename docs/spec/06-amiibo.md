@@ -124,7 +124,7 @@ per-placement, never precomputed**, and the arithmetic is what settles it:
 | Container re-seal (`pack`) | sub-millisecond on the host |
 | Push 540 B over the control link (256 B chunks, ~1 ACK) | **~7 ms** |
 | Device re-seal, were it done there | ~1.5 ms |
-| Console reads 540 B over BLE (9 × 64 B round trips) | **~90 ms** |
+| Console reads 540 B over BLE (9 × 70 B round trips over the 600-byte space) | **~90 ms** |
 
 The push is ~8% of the cost the console imposes anyway. **Precomputed variant sets are
 rejected**: finite identities that repeat (visible to a game), 540 B of device RAM per
@@ -198,37 +198,59 @@ and they are firmware changes rather than protocol changes:
 - The server is `main/src/controller/nfc_tag.c`, a portable state machine asserted on the host
   (`test/host/test_nfc_tag.c`); `control_parser.c` owns the singleton, the report byte and the
   `SCAN_ENDED` event, and `ns2_codec.c` routes the subcommands to it.
-- **The read slice is 64 bytes** — 16 pages — so the whole tag is nine round trips (§7.7). The
-  served shapes are the captured ones
-  (`switch2_controller_research/commands.md:64-66`):
+- **The read is nine round trips over a 600-byte buffer, in 70-byte chunks.** The `0x15`
+  answer in the canonical capture (`switch2_controller_research/commands.md:68`) is an 81-byte
+  response: the 8-byte command header, a **three-byte head** `00 46 00`, then **70 data bytes**.
+  The head is `last` u8 · `len` u16 (LE) — `00` = not the final chunk, `0x46` = 70 = exactly what
+  was served — and the request's own payload `46 00` is offset **70**, i.e. one 70-byte chunk had
+  already been consumed. The served space is therefore `[60 B framing][540 B image]` — **600
+  bytes, the image beginning at serving offset `0x3C`** — and the whole tag is nine round trips at
+  either size (§7.7). *The shipped firmware still serves the image at plain offset 0 in 64-byte
+  chunks with the offset echoed in the head: the superseded reading of that one line. Correcting
+  it is a firmware defect, not a design change (§12.3, G-19 — [the read shapes](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/46) and [the reader contract](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/48)).*
 
   | Command | Request payload | Response payload |
   | --- | --- | --- |
-  | `0x15` read buffer | `offset` u16 (LE) | `0x00` · `offset` u16 (LE) · up to 64 bytes of the image |
-  | `0x14` write buffer | `offset` u16 (LE) · `len` u16 (LE) · `len` bytes | — (taken into the volatile tag) |
-  | `0x05` get status | — | 61 B: status `0x09` + the captured flags + `0x07` + the 7-byte UID; all-zero beyond the status `0x00` when no tag is placed |
+  | `0x15` read buffer | `offset` u16 (LE) | `last` u8 · `len` u16 (LE) · `len` bytes of the 600-byte read buffer, ≤ 70 |
+  | `0x14` write buffer | `offset` u16 (LE) · `len` u16 (LE) · `len` bytes | — (staged into the volatile write image; the G-17 frame below) |
+  | `0x05` get status | — | 61 B: status byte + the captured flags `00 00 00 01 01 02 00` + `0x07` + the 7-byte UID |
   | `0x03`/`0x04`/`0x06` | `0x03`: 5 B poll config; `0x06`: **the read command** — marker `d0`, UID length `07`, UID (`00×7` = read any tag), `01` NTAG215-only, `03` page ranges `00–3b/3c–77/78–86` = all 135 pages (`ns1-nfc-read-decode.md` §1) | — (ACK) |
+
+  The status byte is the lifecycle channel rather than a constant — `0x09` tag in field (the
+  capture's value), `0x04` a read is armed, `0x05` a write was committed, `0x07` nothing in
+  field. The **post-eject** answer is one shape the capture does not carry: the second
+  implementation answers `07` with detail `41` once a scan's read has completed and `0x04`
+  ended it, where the shipped firmware collapses every non-placed state to status `0x00` with
+  the rest zero. Whether the *never-placed* answer should also be `07 41` is open (G-19).
 
 - **`0x06` decoded, and what it implies for the read gate.** The NS1 capture of the same
   exchange (`elmagnificogi_nsre`, context tier) shows the payload commands the *reader* to
-  read the whole tag into its buffer; the console then waits for a completion signal before
-  collecting it with `0x15`. On NS1 that signal is the status line's state byte moving to
-  `04` (the `09 31 04` trailer after the pushed data); on NS2 the status response carries no
-  state byte (the seven "flags" are the constant trailer both sides append,
-  `ns1-nfc-read-decode.md` §3), so the only completion channel left is the input report's NFC
-  byte — and the bench's `0x03`-after-`0x06` guess is retired in favour of the hypothesis
-  knob `NFC_TAG_READ_DONE_BYTE` (`nfc_tag.h`, default `0x03` for build compatibility; the
-  bench build sets `0x04`). The `0x05` flags and the bare `0x06` ACK stay as weakened
-  fallback suspects (`amiibo-game-surface-bench.md` §4).
+  read the whole tag into its buffer; the console then waits for a signal before collecting it
+  with `0x15`. On NS1 that signal is the status line's state byte moving to `04` (the
+  `09 31 04` trailer after the pushed data); on NS2 the same channel survives as the **first
+  byte of the `0x05` answer**, and the second implementation reads its lifecycle as `0x09`
+  (tag in field) → `0x04` for as long as `0x06`'s read is armed → back to `0x09`, or `0x07`
+  when `0x04` ends the scan with the read complete (`ns_pc_control/server/src/s2_nfc_codec.cpp:731-900`,
+  context tier). That matches the bench's own finding exactly — **a `0x05` answer carrying `04`
+  is what unlocked the first console pull** (`register-screen-bench.md`) — and the second
+  implementation needs no push at all. The value is context-tier and the capture shows only
+  `0x09`, so what §12.2 row 5 still settles is the *lifecycle*: edge or level, and how it
+  interleaves with the report byte. That is what the `NFC_TAG_READ_DONE_*` and
+  `NFC_TAG_STATUS_DONE_*` knobs are for (`nfc_tag.h`); the `0x03`-after-`0x06` guess is
+  retired. The `0x05` flags and the bare `0x06` ACK stay as weakened fallback suspects
+  (`amiibo-game-surface-bench.md` §4).
 - **The read pipeline opens — measured on the register screen (`register-screen-bench.md`).**
   The register screen binds its read to the controller that pressed A into it (the prompt's
   icon; #36's "console's own reader" was an artefact of the operator's own navigation), and
   re-arms the full read every ~3.1 s. Three facts now order the flow: the console sends
-  **nothing** in its ~3 s post-`0x06` window (it waits on device pushes); a **whole-tag push
+  **nothing** in its ~3 s post-`0x06` window; a **whole-tag push
   of `0x15`-shaped notifications** unlocks the console's own `0x15` pulls — the first ever
   observed against this device; and a `0x05` **answer** carrying the read-done state `04`
   triggers the first pull within 30 ms (the same bytes pushed unsolicited are ignored — the
-  console's response parser correlates by subcommand). The remaining gate is the
+  console's response parser correlates by subcommand). The silence is the observation; *"it
+  waits on device pushes"* was the day's reading and is the weaker one now, since the answers
+  the device gave it were the superseded shapes (the head, the 64-byte chunk and the
+  image-at-0 space above). The remaining gate is the
   *continuation* — the console probes three offsets deterministically (`0x40`/`0x140`/`0x2c0`),
   takes the `04`, and rides to its deadline; five frame combinations across two sessions
   **crashed the console's amiibo module** (`2011-0301`, forced reboot — the ledger and its
@@ -238,29 +260,53 @@ and they are firmware changes rather than protocol changes:
   (`nfc_tag.h`: `NFC_TAG_PUSH_READ_DATA` (status-first — the safe order), `NFC_TAG_STATUS_DONE_WHEN_READ`,
   `NFC_TAG_STATUS_DONE_ONCE` (which refines the knob before it, the pair refusing to compile apart:
   the done state served as an *edge* rather than a level — `04` once, then the tag-detected answer.
-  Every reference sends its `04` once per read, so the repeated one is half of G-18's crash
-  conjunction; this is the one prepared, unrun variable of [Bench: the read's continuation — what
+  The NS1 references send that `04` once, as a trailer; the second implementation answers it as a
+  *level* for the whole read window **without crashing**, so the repeated `04` is no longer half of
+  G-18's conjunction on its own — the report byte that does not move is the newer suspect (§4.9's
+  note, `ns_pc_control/server/src/virtual_controller.cpp:195-266`); this is the one prepared, unrun
+  variable of [Bench: the read's continuation — what
   does the console need after the first `0x15` pull?](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/45)),
   `NFC_TAG_READ_DONE_BYTE/MS` (`MS` defaults to the pulse; the hold is the falsified variant), `NFC_TAG_READ_PAD_TO`,
   `NFC_TAG_BUFFER_P1_PREFIX` — the last
-  serves `[60 B P1 framing][image]`, the layout the canonical `0x46`→image-`0x0A` shift
-  implies, host-tested under its own compile).
-- **The `0x14` payload is framed, not a raw slice (G-17).** The canonical write capture's
-  data opens `d0 07 <uid7> 01 …` — the NS1 write-setup framing, not image bytes at an offset.
-  The served shape above keeps the header reading (offset+len, as captured) but the bytes
-  stored are framed until G-17's decode lands; no write has ever arrived to exercise it.
+  serves `[60 B framing][image]`, the right *space* carrying the wrong *content* (the head's two
+  candidates are below), host-tested under its own compile).
+- **The `0x14` payload is framed, and G-17's decode is written down.** The canonical write
+  capture opens `d0 07 <uid7> 01 …` — write-setup framing, not image bytes at an offset — and
+  the second implementation's staging decode matches it byte for byte
+  (`ns_pc_control/server/src/s2_nfc_codec.cpp:201-278`, context tier). The staging stream is 454
+  bytes accumulated across `0x14` chunks (the capture's `4c 00` = 76 = six chunks), laid out as
+  `d0 07` · UID(7) at `2`–`8` · 8 opaque bytes at `9`–`16` · 4 bytes at `17`–`20` copied to image
+  `[16..19]` · **record count at `21`** · then `(page, length, data)` records; `0x08` commits it
+  and the status becomes `0x05`. The count, the header and the first record (page `5`, length
+  `32`) all line up with `switch2_controller_research/commands.md:67`'s example. The shipped
+  firmware's offset+len handler still stores the framed bytes into the image unchanged (G-17,
+  G-19 — [the write path ticket](https://github.com/2017fighting/ESP32-BLE5-NSController-Emulator/issues/47));
+  no write has ever arrived to exercise it.
 
-- **The console-facing *offset* space is still unverified.** The canonical capture reads at
-  wire offset `0x46` and the returned data opens on the image's static-lock/capability bytes at
-  tag-image offset `0x0A` — the corpus's own page 2 carries `0F E0`, so the capture's leading
-  `0f e0` is the image **verbatim** and the earlier "first 16-bit word transposed" reading was
-  wrong; the hypothesis is a constant shift, **`wire = image + 0x3C`**, not a permutation. The
-  question is still open — no `0x15` exchange has ever been observed from a real console
-  (§12.2 row 5, `amiibo-read-bench.md`) — and the server serves plain byte offsets until the
-  first traced read says otherwise. The knob for that day is `NFC_TAG_READ_WIRE_BASE`
-  (`nfc_tag.h`, default `0`): reads below the base answer nothing, the echo always echoes the
-  wire offset, writes stay plain (the one captured write fits no shift), and the host suite
-  runs under both compiles in CI.
+- **The console-facing *offset* space is `image = wire − 0x3C`, and arithmetic settles it.**
+  The canonical capture reads at wire offset `0x46` and the returned data opens on the image's
+  static-lock/capability bytes at tag-image offset `0x0A` — the corpus's own page 2 carries
+  `0F E0`, so the capture's leading `0f e0` is the image **verbatim** and the earlier "first
+  16-bit word transposed" reading was wrong. The shift is a constant **60 = 0x3C**, which is
+  exactly the framing head's length: the wire space *is* the 600-byte read buffer, so there is
+  no permutation and no table to invent. The open half is now the **out-of-range** case: the
+  bench's third probe (`0x2c0` = 704, beyond even 600) was answered with nothing and the cycle
+  stopped, where the second implementation answers a bare last-chunk marker `01 00 00`. The
+  plain-offset server (`NFC_TAG_READ_WIRE_BASE`, `nfc_tag.h`, default `0`) still serves
+  image-at-0 until a bench build flips it; writes stay plain, since the one captured write fits
+  no shift.
+- **What the framing head's 60 bytes *contain* is the one thing the capture does not settle**,
+  and it is where the bench's crashes live (G-18). Two candidates differ in their first 19 bytes
+  and agree on the rest. The NS1 P1 packet's framing (`3a 00 07 01 …` — the hardcoded bytes in
+  `NFC_TAG_BUFFER_P1_PREFIX`, from `elmagnificogi_nsre`) against the genuine PC2 read buffer the
+  second implementation builds (`ns_pc_control/server/src/s2_nfc_codec.cpp:158-199`, context
+  tier): `04 00 00 00 01 02 00 07` · UID(7) · four zero bytes · a 32-byte constant at `19` · 9
+  bytes echoing the `0x06` request's own `payload[10..18]` at `51`. The two agree on the 32-byte
+  constant at `19` and the 9 echoed bytes at `51` — they come from different captures and still
+  agree, the strongest hint that the tail is right and that the head is what differs. The PC2
+  head is the candidate to test first, but a context-tier implementation cannot carry an NS2
+  requirement: it is a hypothesis with a working implementation behind it, not this chapter's
+  content.
 - **Every console NFC exchange is traced, never logged inline.** `nfc_trace.h`/`.c` (portable,
   host-tested) records each distinct `(subcommand, offset)` with the CRC of exactly the bytes
   served — §2.2's call — and `control_parser.c` drains it as `console nfc:` INFO lines at the
@@ -270,9 +316,12 @@ and they are firmware changes rather than protocol changes:
   these lines is `scripts/bench_amiibo_read.py`.
 - **The probe answers the documented `61 12 50 0d`.** The shipped firmware's `…10` was A/B-
   tested against it on the bench — identical console behaviour to the subcommand on every
-  surface reached — and the documented value is now what the device answers. G-12 stays open
-  with its question narrowed (§12.3): the probe/status path is byte-neutral, the read-start
-  gate is the untested half.
+  surface reached — and the documented value is now what the device answers. A second,
+  independent genuine-Pro-Controller-2 capture reads `61 12 50 10`
+  (`ns_pc_control/server/src/switch2_native.cpp:661-666`, context tier), so the byte is a
+  firmware-version question rather than a wrong-value one. G-12 stays open with its question
+  narrowed (§12.3): the probe/status path is byte-neutral, the read-start gate is the untested
+  half.
 - The state byte is the `nfc_state` field of `hid_report_pro2_t` (§4.9), written into both report
   buffers by `controller_ops_t.set_nfc_state`. `STATUS.console_polling` is the server's *other*
   output — the console's own level, which moves on `0x03`/`0x04`/`0x05` in any mode, where the byte

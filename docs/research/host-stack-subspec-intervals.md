@@ -1,5 +1,10 @@
 # Research: Host Stack Decision (NimBLE vs. Bluedroid) for Sub-Spec BLE Connection Intervals on ESP32-S3
 
+> **Corrected in part (spec §6.6, §7.7).** The budget below is derived from a `0x15` response of
+> `8 + 3 + 64 = 75` bytes. The canonical capture's response is `8 + 3 + 70 = 81` bytes, so the
+> MTU floor is **84**, not 80. The verdict and the interval analysis stand; only the byte
+> arithmetic in the §"Chunk Size" argument is superseded.
+
 ## Verdict: KEEP NimBLE (Do NOT Move to Bluedroid)
 
 **Direct Answer:**  

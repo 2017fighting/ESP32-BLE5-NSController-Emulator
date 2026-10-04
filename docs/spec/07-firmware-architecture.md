@@ -78,12 +78,14 @@ discipline ADR-0006 implies: the framing knows about the noise, the transport do
 6. **The NFC state machine and tag server** — **done with #25.** `main/src/controller/
    nfc_tag.c` drives HID report `0x09` byte `0x0C` (§4.9, now `nfc_state`) and answers
    `0x01/0x03`, `0x01/0x04`, `0x01/0x05`, `0x01/0x06`, `0x01/0x14`, `0x01/0x15`. The device is a
-   byte server: it slices a 540-byte RAM buffer 64 bytes at a time and does no crypto
-   (ADR-0011). The module is portable C, so the placement/unplacement/gap ordering and the
-   page-wise slice are asserted on the host (`test/host/test_nfc_tag.c`); `control_parser.c`
-   owns the singleton, the report write and the `SCAN_ENDED` event, and `ns2_codec.c` routes the
-   subcommands. The console-facing offset space of `0x14`/`0x15` remains unverified — §6.6
-   carries the served shapes and names it as validation 5's question.
+   byte server: it slices a RAM buffer and does no crypto (ADR-0011) — 60 bytes of framing plus
+   the 540-byte image, served 70 bytes at a time (§6.6, §7.7; the shipped build still slices
+   540 from offset 0 in 64-byte chunks and is G-19's defect). The module is portable C, so the
+   placement/unplacement/gap ordering and the page-wise slice are asserted on the host
+   (`test/host/test_nfc_tag.c`); `control_parser.c` owns the singleton, the report write and the
+   `SCAN_ENDED` event, and `ns2_codec.c` routes the subcommands. The console-facing offset space
+   of `0x14`/`0x15` is now the arithmetic of §6.6 (`image = wire − 0x3C`); only its out-of-range
+   case is still validation 5's question.
 7. **`CONFIG`**: `report_interval_ms` and `led`, volatile, applied at the boundary §2.9 fixes.
 8. **The Direction byte is already handled — no decision is left here.** `cmd_process()` flips
    response byte 1 from `0x91` to `0x01` centrally (`main/src/ns2_codec.c:656-658`), for
@@ -286,10 +288,10 @@ traffic:
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| Data Length Extension | **enabled** | disabling it caps LL PDUs at 27 bytes and fragments each 75-byte `0x15` response across three connection events, tripling latency |
-| ATT MTU | **≥ 80**; 128–256 a safe target | a `0x15` response is 8 + 3 + 64 = **75 bytes**; below an MTU of 80 it is segmented |
-| Chunk size | 64 bytes | the console's read granularity |
-| The whole tag read | **9 round trips ≈ 90 ms** | ~15% of a 5 ms window per exchange; comfortably inside the interactive window and against ~1.5 ms of host-side re-sealing (§6.4) |
+| Data Length Extension | **enabled** | disabling it caps LL PDUs at 27 bytes and fragments each 81-byte `0x15` response across three connection events, tripling latency |
+| ATT MTU | **≥ 84**; 128–256 a safe target | a `0x15` response is 8 + 3 + 70 = **81 bytes** (§6.6), and a notification carries `MTU − 3`; below an MTU of 84 it is segmented |
+| Chunk size | 70 bytes | the console's read granularity in the capture — the request at offset `0x46` had already consumed one 70-byte chunk (§6.6) |
+| The whole tag read | **9 round trips ≈ 90 ms** | 600 served bytes at 70 per exchange; ~15% of a 5 ms window per exchange; comfortably inside the interactive window and against ~1.5 ms of host-side re-sealing (§6.4) |
 
 So the 540-byte tag path and the 5 ms link are compatible, and the constraint is real but not
 binding at these sizes. **This is a firmware configuration requirement, not an optimisation:**

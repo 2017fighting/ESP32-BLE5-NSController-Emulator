@@ -317,3 +317,13 @@ Consequences worth writing down:
 - The field's name is `nfc_state` rather than `unknown_0x0c` as of #25, and the value semantics
   are the earlier NFC research's (`0x01` polling, `0x02` tag detected) — the low three values of
   `switch2_controller_research/hid_reports.md:178`'s `0x00`–`0x07` range, given meaning.
+- **The byte's *change*, not only its value, may be what the console reads** (context tier,
+  recorded before the next bench). The second NS2 implementation drives this byte as an **event
+  counter** — `(previous + 1) & 0x07`, advanced on tag-presented / scan-ready / operation-ready /
+  write-complete / tag-removed, never resting on one value through a read
+  (`ns_pc_control/server/src/virtual_controller.cpp:195-266`). That reads
+  `hid_reports.md:178`'s `0x00`–`0x07` range as a *sequence* rather than a vocabulary, and it is
+  the one explanation this chapter has for the benchmark's darkest fact: G-18's isolated crash
+  factor is a byte **held** at a single value across a whole read window, while every run that let
+  it move survived. Nothing here changes until a bench says so — the closed vocabulary stands —
+  but that session has to decide the byte's *shape*, not only its value.

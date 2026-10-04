@@ -12,8 +12,9 @@
 #include <string.h>
 
 /* The captured `0x05` flags at payload offsets 1-7
- * (`switch2_controller_research/commands.md:33`), reproduced verbatim: the
- * console only branches on the status byte at offset 0, and inventing values for
+ * (`switch2_controller_research/commands.md:63`), reproduced verbatim: the
+ * console branches on the status byte at offset 0 (which the second
+ * implementation moves `09`→`04`→`07`; spec §6.6), and inventing values for
  * fields nobody has decoded would be worse than echoing what was observed. */
 static const uint8_t nfc_status_flags[7] = {0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x00};
 
@@ -22,7 +23,14 @@ static const uint8_t nfc_status_flags[7] = {0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 
  * its UID field (15 header + 4 zeros + 32 magic + 9 echoed page-ranges),
  * byte-for-byte from `elmagnificogi_nsre`'s real capture. The magic blob is
  * the constant both the real controller and Poohl's emulation carry; the
- * ranges echo the canonical full-tag read the console's `0x06` asks for. */
+ * ranges echo the canonical full-tag read the console's `0x06` asks for.
+ *
+ * **Superseded candidate (spec §6.6):** the 60-byte *space* is settled —
+ * `image = wire - 0x3C` — but this P1-derived *content* is the variant to
+ * replace: a genuine PC2 read buffer of the same length exists
+ * (`ns_pc_control/server/src/s2_nfc_codec.cpp:158-199`, context tier) and is
+ * the first candidate to test. Both put the 32-byte blob at 19 and the 9 echoed
+ * bytes at 51; they differ in their first 19. */
 static const uint8_t nfc_p1_prefix[NFC_TAG_P1_PREFIX_SIZE] = {
     0x3a, 0x00, 0x07, 0x01, 0x00, 0x01, 0x31, 0x02, 0x00, 0x00,
     0x00, 0x01, 0x02, 0x00, 0x07,
@@ -41,9 +49,11 @@ static uint16_t nfc_rd_le16(const uint8_t *p)
 }
 
 /* The `0x15` response's three-byte head: a leading `0x00` then the *wire*
- * offset echoed little-endian — the captured shape
- * (`switch2_controller_research/commands.md:66`), shared by the pad path and
- * the slice path so the echo cannot drift between them. */
+ * offset echoed little-endian. **Superseded shape (spec §6.6, G-19):** the
+ * capture's head is `last` u8 · `len` u16 (LE)
+ * (`switch2_controller_research/commands.md:68`); this echo is the older reading
+ * of the same three bytes, kept — shared by the pad path and the slice path —
+ * until G-19's fix lands. */
 static void nfc_reply_echo_wire(uint8_t *out, uint16_t wire)
 {
     out[0] = 0x00;
@@ -258,10 +268,11 @@ static size_t nfc_reply_read(nfc_tag_t *nfc, const uint8_t *payload, size_t len,
     }
     uint16_t wire = nfc_rd_le16(payload);
 #if NFC_TAG_READ_WIRE_BASE != 0
-    /* The bench knob (§6.6): serve `image[wire - base]`, so a wire base of
-     * 0x3C answers wire 0x46 with image 0x0A. The echo is still the wire
-     * offset — the capture's response echoes `46 00` behind the leading 0x00
-     * (`switch2_controller_research/commands.md:66`). */
+    /* §6.6's mapping, no longer a hypothesis: the served space is
+     * `[60 B framing][540 B image]`, so a wire base of 0x3C answers wire 0x46
+     * with image 0x0A and the capture's `46 00` is that same 70. The knob stays
+     * so a bench build can still serve plain offsets until G-19 flips the
+     * default. */
     if (wire < NFC_TAG_READ_WIRE_BASE) {
         return 0;
     }
@@ -298,8 +309,9 @@ static size_t nfc_reply_read(nfc_tag_t *nfc, const uint8_t *payload, size_t len,
     if (out == NULL || out_cap < 3u + chunk) {
         return 0;
     }
-    /* The captured response echoes the offset in its own little-endian pair
-     * behind a leading `0x00` (`switch2_controller_research/commands.md:66`). */
+    /* Superseded head (G-19): the capture's little-endian pair here is the
+     * *length* served, not the offset
+     * (`switch2_controller_research/commands.md:68`). */
     nfc_reply_echo_wire(out, wire);
 #if NFC_TAG_BUFFER_P1_PREFIX != 0
     /* The view: 60 bytes of P1 framing, then the image — a chunk may straddle
